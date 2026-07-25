@@ -1,4 +1,4 @@
-"""FastAPI application entry point and route definitions."""
+"""FastAPI app entry point."""
 
 import json
 import logging
@@ -46,7 +46,7 @@ from app.models import User
 from app.narrative import GeminiGenerationError, GeminiRateLimitedError, render_summary_markdown
 from app.ratelimit import RateLimitExceededError, check_limit, record_usage
 
-# Configure root logging so app.* loggers propagate under uvicorn.
+# Configure logging.
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -56,46 +56,33 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize the database once when the FastAPI app starts up."""
-    # Create the database tables before serving requests.
+    """Initialize the database on startup."""
     await init_db()
     yield
 
 
 app = FastAPI(title="Astronomy Multi-Catalog Cross-Matcher", lifespan=lifespan)
 
-# Session cookies back both login state and anonymous rate limiting.
-# Set SESSION_SECRET_KEY in real deployments so cookies survive restarts and work
-# consistently across multiple workers.
+# Session cookies back login state and anonymous rate limiting.
 _session_secret_key = os.getenv("SESSION_SECRET_KEY")
 if not _session_secret_key:
     _session_secret_key = secrets.token_hex(32)
     logger.warning(
-        "SESSION_SECRET_KEY not set -- using a randomly generated key for this "
+        "SESSION_SECRET_KEY not set; using a randomly generated key for this "
         "process only. Sessions will not survive a restart. Set SESSION_SECRET_KEY "
         "explicitly before deploying anywhere beyond local single-process dev."
     )
 app.add_middleware(SessionMiddleware, secret_key=_session_secret_key)
 
-# Serve static assets (currently just the hand-rolled design-system CSS -- no
-# frontend build step in this project) at /static.
+# Serve static assets.
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 def _tojson(value) -> Markup:
-    """Render a Python value as a JSON literal safe to inline into a <script>
-    block. Plain Jinja2 (unlike Flask's) doesn't ship a `tojson` filter, and
-    result.html needs one to pass ra_deg/dec_deg/name into the coordinate
-    visualiser without hand-rolling JS-string escaping."""
+    """Render a Python value as a JSON literal for templates."""
     return Markup(json.dumps(value).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026"))
 
 
-# Load HTML templates from the templates directory so each route can render pages.
-# autoescape is REQUIRED here -- a plain jinja2.Environment defaults to
-# autoescape=False (unlike FastAPI's Jinja2Templates, which enables it), and
-# result.html interpolates object.query_text (raw, user-typed search input)
-# into rendered HTML. Without this, that's a reflected XSS: see EVALUATION.md
-# 1.1, which reproduced it with a GET /search?q=<img src=x onerror=alert(1)>
-# payload rendered unescaped straight into the page <title>.
+# Load templates with HTML escaping enabled.
 env = Environment(loader=FileSystemLoader("app/templates"), autoescape=select_autoescape(["html"]))
 env.filters["render_summary_markdown"] = render_summary_markdown
 env.filters["tojson"] = _tojson
@@ -103,25 +90,20 @@ env.globals["csrf_token"] = get_csrf_token
 
 
 async def require_csrf_form(request: Request, csrf_token: str = Form(...)) -> None:
-    """FastAPI dependency for form-encoded POST routes: reject the request before
-    it does anything if the submitted csrf_token doesn't match this session's.
-    See EVALUATION.md suggestion #6."""
+    """Reject invalid form CSRF tokens."""
     if not verify_csrf_token(request, csrf_token):
         raise HTTPException(status_code=403, detail="Invalid or missing CSRF token. Please reload the page and try again.")
 
 
 async def require_csrf_header(request: Request) -> None:
-    """FastAPI dependency for JSON/fetch-based POST routes (no form body to carry a
-    csrf_token field): reads the token from the X-CSRF-Token header instead, which
-    result.html's JS sets from the <meta name="csrf-token"> tag in base.html. See
-    EVALUATION.md suggestion #6."""
+    """Reject invalid JSON CSRF tokens."""
     if not verify_csrf_token(request, request.headers.get("x-csrf-token")):
         raise HTTPException(status_code=403, detail="Invalid or missing CSRF token. Please reload the page and try again.")
 
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request, current_user: User | None = Depends(get_current_user)) -> HTMLResponse:
-    """Render the landing page for the web interface."""
+    """Render the landing page."""
     template = env.get_template("index.html")
     html = template.render(request=request, current_user=current_user)
     return HTMLResponse(content=html)
@@ -131,18 +113,13 @@ async def home(request: Request, current_user: User | None = Depends(get_current
 async def search(
     request: Request, q: str | None = None, current_user: User | None = Depends(get_current_user)
 ) -> HTMLResponse:
-    """Resolve a search query and render the details page, or fall back to the home page when empty."""
+    """Resolve a search query or show the landing page when empty."""
     if not q:
         template = env.get_template("index.html")
         html = template.render(request=request, current_user=current_user)
         return HTMLResponse(content=html)
 
-    # Resolve the query through the cache/resolver pipeline and render the result page.
-    # generate_ai_summary=False: render the scientific data immediately rather than
-    # blocking the whole page on the Gemini call (observed taking up to ~42s for a
-    # single heavily-catalogued star). The AI summary panel is filled in afterward by
-    # result.html's client-side JS calling GET /object/{id}/summary -- the same
-    # "results first, AI overview second" pattern search engines use.
+    # Resolve the query and render the result page.
     result = await get_or_resolve(q, generate_ai_summary=False)
     favorited = False
     if current_user is not None and result.id is not None:
@@ -156,7 +133,7 @@ async def search(
 async def object_profile(
     request: Request, simbad_main_id: str, current_user: User | None = Depends(get_current_user)
 ) -> HTMLResponse:
-    """Display a stored object profile, refreshing it if the cache entry expired."""
+    """Display an object profile."""
     obj = await get_object_by_simbad_id(simbad_main_id)
     if obj is None:
         obj = await get_or_resolve(simbad_main_id, generate_ai_summary=False)
@@ -169,19 +146,7 @@ async def object_profile(
 
 
 def _gemini_error_response(exc: GeminiGenerationError) -> JSONResponse:
-    """Build the JSON body/status for a failed Gemini generation attempt.
-
-    Deliberately uses 503 (Service Unavailable), not 429, even for
-    GeminiRateLimitedError: our own app-level throttling (check_limit's
-    RateLimitExceededError) and the per-object regenerate cooldown
-    (CooldownActiveError) both already use 429 with a {retry_after_seconds} body,
-    and the frontend's existing cooldown countdown UI keys off that status code.
-    Reusing 429 for "Gemini's servers are overloaded" would make the frontend
-    (incorrectly) start that same client-side countdown for a failure that isn't
-    actually a countdown-able cooldown on the user's own actions. 503 keeps the
-    two failure classes visually and programmatically distinct while still being
-    a standard "transient, safe to retry" status.
-    """
+    """Build a JSON error response for Gemini failures."""
     body: dict[str, object] = {"error": "ai_generation_failed", "message": exc.user_message}
     if isinstance(exc, GeminiRateLimitedError):
         body["error"] = "ai_rate_limited"
@@ -194,18 +159,10 @@ def _gemini_error_response(exc: GeminiGenerationError) -> JSONResponse:
 async def object_summary(
     request: Request, simbad_main_id: str, current_user: User | None = Depends(get_current_user)
 ) -> JSONResponse:
-    """Return the AI narrative for an object, generating it on demand."""
-    # A cache hit costs no Gemini quota, so it must not be charged against the
-    # per-client rate limit below -- see EVALUATION.md 1.2. Checked before
-    # check_limit() runs at all, not just before record_usage(), since
-    # check_limit() alone doesn't write anything but still incorrectly gated a
-    # free cache read behind the same budget as an actual generation.
+    """Return the AI narrative for an object."""
     cached_summary = await get_cached_ai_summary(simbad_main_id)
     if cached_summary is not None:
-        # A logged-in user still gets their own personal snapshot of the shared
-        # summary on a cache hit, same as on a fresh generation -- this mirrors
-        # the un-shortcut path below and is covered by
-        # test_ai_summary_remains_single_global_value_regardless_of_snapshot_count.
+        # Save a personal snapshot for logged-in users on cache hits.
         if current_user is not None:
             object_id = await get_object_id_by_simbad_id(simbad_main_id)
             if object_id is not None:
@@ -229,14 +186,10 @@ async def object_summary(
     except LookupError:
         return JSONResponse({"error": "Object not found"}, status_code=404)
     except GeminiGenerationError as exc:
-        # Attempt failed -- don't record rate-limit usage for it (nothing was
-        # actually generated) so the client isn't penalised for a server-side
-        # failure that wasn't their fault.
         logger.error("AI summary generation failed for %s: %s", simbad_main_id, exc)
         return _gemini_error_response(exc)
 
-    # Only charge the per-client Gemini-quota-spending allowance once generation
-    # has actually succeeded (see app.ratelimit.record_usage's docstring).
+    # Record usage only after a successful generation.
     await record_usage(subject_type, subject_id)
 
     if current_user is not None:
@@ -251,7 +204,7 @@ async def object_summary(
 async def object_summary_regenerate(
     request: Request, simbad_main_id: str, current_user: User | None = Depends(get_current_user)
 ) -> JSONResponse:
-    """Regenerate an object's AI narrative, enforcing server-side limits."""
+    """Regenerate an object's AI narrative."""
     subject_type = "user" if current_user is not None else "session"
     subject_id = str(current_user.id) if current_user is not None else get_session_id(request)
     try:
@@ -276,13 +229,6 @@ async def object_summary_regenerate(
         response.headers["Retry-After"] = str(exc.retry_after_seconds)
         return response
     except GeminiGenerationError as exc:
-        # regenerate_ai_summary() only writes ai_summary_generated_at (the
-        # cooldown clock) after generate_summary() returns successfully, so a
-        # failure here has already left that timestamp untouched -- the user is
-        # free to try again immediately rather than being stuck in a 5-minute
-        # cooldown for an attempt that never produced a summary. Likewise, skip
-        # record_usage() below so the failed attempt doesn't consume their
-        # per-client Gemini-quota-spending allowance either.
         logger.error("AI summary regeneration failed for %s: %s", simbad_main_id, exc)
         return _gemini_error_response(exc)
 
@@ -298,7 +244,7 @@ async def object_summary_regenerate(
 
 @app.get("/api/resolve")
 async def api_resolve(q: str | None = None) -> JSONResponse:
-    """Expose the resolver as a JSON API for programmatic access."""
+    """Expose the resolver as a JSON API."""
     if not q:
         return JSONResponse({"error": "Missing query"}, status_code=400)
 
@@ -308,7 +254,7 @@ async def api_resolve(q: str | None = None) -> JSONResponse:
 
 @app.get("/history", response_class=HTMLResponse)
 async def history(request: Request, current_user: User | None = Depends(get_current_user)) -> HTMLResponse:
-    """Show the most recently resolved objects from the cache database."""
+    """Show recently resolved objects."""
     objects = list_recent_objects(limit=10)
     if hasattr(objects, "__await__"):
         objects = await objects
@@ -318,13 +264,7 @@ async def history(request: Request, current_user: User | None = Depends(get_curr
 
 
 def _safe_next_path(next_path: str | None) -> str:
-    """Validate a next= redirect target, defaulting to "/" for anything unsafe.
-
-    Only accepts a path that starts with a single "/" (not "//..." or
-    "/\\...", both of which browsers can interpret as protocol-relative URLs
-    pointing at an attacker-controlled host) -- this is the standard open-redirect
-    guard for a same-origin "return to where you were" parameter.
-    """
+    """Validate a redirect target."""
     if not next_path:
         return "/"
     if not next_path.startswith("/"):
@@ -346,13 +286,7 @@ async def register_form(request: Request, next: str | None = None) -> HTMLRespon
 async def register_submit(
     request: Request, email: str = Form(...), password: str = Form(...), next: str | None = Form(None)
 ) -> HTMLResponse | RedirectResponse:
-    """Create a new user, hash their password, and log them in on success.
-
-    Duplicate emails and invalid passwords are caught explicitly and re-render the
-    form with an error rather than surfacing a raw 500 -- see create_user()'s
-    docstring in app/auth.py for the insert-then-catch-IntegrityError pattern this
-    relies on.
-    """
+    """Create a new user and log them in."""
     normalized_email = email.strip().lower()
     try:
         user = await create_user(email=normalized_email, password=password)
@@ -381,7 +315,7 @@ async def login_form(request: Request, next: str | None = None) -> HTMLResponse:
 async def login_submit(
     request: Request, email: str = Form(...), password: str = Form(...), next: str | None = Form(None)
 ) -> HTMLResponse | RedirectResponse:
-    """Verify credentials and log the user in via session on success."""
+    """Verify credentials and log the user in."""
     user = await authenticate(email.strip().lower(), password)
     if user is None:
         template = env.get_template("login.html")
@@ -394,7 +328,7 @@ async def login_submit(
 
 @app.post("/logout", dependencies=[Depends(require_csrf_form)])
 async def logout(request: Request) -> RedirectResponse:
-    """Clear the current session's logged-in state."""
+    """Log the current user out."""
     log_out_session(request)
     return RedirectResponse(url="/", status_code=303)
 
@@ -403,8 +337,7 @@ async def logout(request: Request) -> RedirectResponse:
 async def favorite_object(
     request: Request, simbad_main_id: str, current_user: User | None = Depends(get_current_user)
 ) -> RedirectResponse | JSONResponse:
-    """Favorite an object for the logged-in user. Requires login; anonymous
-    attempts are redirected to the login page rather than silently ignored."""
+    """Favorite an object for the current user."""
     if current_user is None:
         return RedirectResponse(url=f"/login?next=/object/{quote(simbad_main_id, safe='')}", status_code=303)
 
@@ -420,7 +353,7 @@ async def favorite_object(
 async def unfavorite_object(
     request: Request, simbad_main_id: str, current_user: User | None = Depends(get_current_user)
 ) -> RedirectResponse | JSONResponse:
-    """Remove an object from the logged-in user's favorites. Requires login."""
+    """Remove an object from the current user's favorites."""
     if current_user is None:
         return RedirectResponse(url=f"/login?next=/object/{quote(simbad_main_id, safe='')}", status_code=303)
 
@@ -436,14 +369,7 @@ async def unfavorite_object(
 async def account_saved(
     request: Request, current_user: User | None = Depends(get_current_user)
 ) -> HTMLResponse | RedirectResponse:
-    """List the logged-in user's favorited objects.
-
-    Each entry shows the user's own personal AI-summary snapshot if they've ever
-    generated/regenerated one for that object, falling back to the shared canonical
-    ObjectRecord.ai_summary if they favorited an object without ever generating one
-    themselves (e.g. they favorited it while someone else's summary was already
-    showing, or before any summary existed at all).
-    """
+    """List the current user's favorite objects."""
     if current_user is None:
         return RedirectResponse(url="/login?next=/account/saved", status_code=303)
 

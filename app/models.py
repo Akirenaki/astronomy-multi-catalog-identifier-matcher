@@ -1,4 +1,4 @@
-"""SQLAlchemy ORM models for cached astronomical object resolutions."""
+"""ORM models."""
 
 import json
 from datetime import datetime, timezone
@@ -9,15 +9,11 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 class Base(DeclarativeBase):
-    """Base class for all SQLAlchemy ORM models in this project."""
     pass
 
 
 class ObjectRecord(Base):
-    """Represents one resolved or unresolved object lookup in the cache database."""
     __tablename__ = "objects"
-
-    # Core identity and metadata for the queried astronomical object.
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     simbad_main_id: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
     query_text: Mapped[str] = mapped_column(String, nullable=False, index=True)
@@ -26,28 +22,19 @@ class ObjectRecord(Base):
     otype: Mapped[str | None] = mapped_column(String, nullable=True)
     spectral_type: Mapped[str | None] = mapped_column(String, nullable=True)
     resolution_state: Mapped[str] = mapped_column(String, nullable=False)
-    # True when this record's PARTIAL state reflects a failed Exoplanet Archive
-    # lookup rather than a confirmed "no known planets" -- always False for
-    # RESOLVED/AMBIGUOUS/UNRESOLVED/LOOKUP_FAILED. Drives both the shorter TTL in
-    # store_result() and the caveat shown in result.html's PARTIAL banner. See
-    # EVALUATION.md 1.3: without this, an Exoplanet Archive outage got cached as a
-    # confident negative for the full 14-day TTL.
+    # Tracks whether a partial result came from a lookup failure.
     planets_lookup_failed: Mapped[bool] = mapped_column(default=False, nullable=False)
     ai_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Set whenever an AI summary is actually generated (initial generation or a
-    # regeneration) -- kept separate from resolved_at since regeneration can happen
-    # long after the object was first resolved. Drives the per-object cooldown in
-    # regenerate_ai_summary(); left null until the first summary is generated.
+    # Timestamp for the most recent AI summary.
     ai_summary_generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # Only populated when resolution_state == 'AMBIGUOUS'. This preserves the candidate list for UI rendering.
+    # Candidate list for ambiguous lookups.
     candidates_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Serialized (JSON) alias-chain trail, e.g. ["51 pegasi", "51 Peg", "51 Peg b"], for the
-    # "resolved via: ... -> ... -> ..." UI the spec calls for on RESOLVED/PARTIAL pages.
+    # Serialized resolution trail for the UI.
     resolved_via_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     resolved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
-    # Child rows associated with this object, automatically removed when the parent row is deleted.
+    # Child rows associated with this object.
     identifiers: Mapped[List["IdentifierRecord"]] = relationship(back_populates="object", cascade="all, delete-orphan")
     planets: Mapped[List["PlanetRecord"]] = relationship(back_populates="object", cascade="all, delete-orphan")
 
@@ -60,7 +47,7 @@ class ObjectRecord(Base):
 
     @property
     def candidates(self) -> list[dict[str, Any]]:
-        """Deserialize the stored candidate list back into Python objects for the web layer."""
+        """Deserialize stored candidates."""
         if not self.candidates_json:
             return []
         try:
@@ -70,7 +57,7 @@ class ObjectRecord(Base):
 
     @property
     def resolved_via(self) -> list[str]:
-        """Deserialize the stored alias-chain trail (empty list if none was recorded)."""
+        """Deserialize the stored resolution trail."""
         if not self.resolved_via_json:
             return []
         try:
@@ -79,7 +66,7 @@ class ObjectRecord(Base):
             return []
 
     def to_dict(self) -> dict:
-        """Create a JSON-friendly dictionary for API responses."""
+        """Create a JSON-friendly dictionary."""
         return {
             "id": self.id,
             "simbad_main_id": self.simbad_main_id,
@@ -104,7 +91,7 @@ class ObjectRecord(Base):
 
 
 class IdentifierRecord(Base):
-    """Stores a SIMBAD alias or identifier associated with an object record."""
+    """Stores a SIMBAD alias or identifier."""
     __tablename__ = "identifiers"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -118,7 +105,7 @@ class IdentifierRecord(Base):
     __table_args__ = (UniqueConstraint("object_id", "catalog", "identifier", name="uq_identifier"),)
 
     def to_dict(self) -> dict:
-        """Serialize a single identifier row for API output."""
+        """Serialize an identifier row."""
         return {
             "id": self.id,
             "catalog": self.catalog,
@@ -128,7 +115,7 @@ class IdentifierRecord(Base):
 
 
 class PlanetRecord(Base):
-    """Stores planet information linked to a resolved object."""
+    """Stores planet information."""
     __tablename__ = "planets"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -143,7 +130,7 @@ class PlanetRecord(Base):
     object: Mapped[ObjectRecord] = relationship(back_populates="planets")
 
     def to_dict(self) -> dict:
-        """Serialize a planet row for API output."""
+        """Serialize a planet row."""
         return {
             "id": self.id,
             "pl_name": self.pl_name,
@@ -156,7 +143,7 @@ class PlanetRecord(Base):
 
 
 class User(Base):
-    """A registered account used by session-cookie auth."""
+    """A registered account."""
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -173,7 +160,7 @@ class User(Base):
 
 
 class SavedSearch(Base):
-    """A logged-in user's favorited object."""
+    """A saved object for a user."""
     __tablename__ = "saved_searches"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -188,7 +175,7 @@ class SavedSearch(Base):
 
 
 class UserSummarySnapshot(Base):
-    """A logged-in user's saved copy of an AI summary for one object."""
+    """A saved AI summary snapshot."""
     __tablename__ = "user_summary_snapshots"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -204,18 +191,7 @@ class UserSummarySnapshot(Base):
 
 
 class QueryAlias(Base):
-    """Maps a normalized query string to the ObjectRecord it last resolved to.
-
-    ObjectRecord.query_text only ever holds the *one* query string a row was most
-    recently (re-)resolved from, so "51 Peg", "51 Pegasi", and "HD 217014" -- three
-    different strings that all resolve to the same star -- previously missed the
-    cache and triggered a fresh SIMBAD + Exoplanet Archive round trip every time a
-    new alias was searched, even though the object itself was already cached under
-    a different query_text. This table is a lightweight secondary index so
-    get_cached() can also check "has *any* query string ever resolved to an object
-    that's still fresh" before falling through to a live re-resolution. See
-    EVALUATION.md 1.4.
-    """
+    """Maps a query string to the object it resolved to."""
     __tablename__ = "query_aliases"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)

@@ -1,4 +1,4 @@
-"""Natural-language summary generation for resolved object lookups."""
+"""Natural-language summary generation."""
 
 from __future__ import annotations
 
@@ -13,18 +13,18 @@ from markupsafe import Markup
 
 try:
     from google import genai
-    from google.genai.errors import APIError  # Clean error handling
-except ImportError:  # pragma: no cover - exercised when the optional dependency is absent
+    from google.genai.errors import APIError
+except ImportError:  # pragma: no cover
     genai = None
 
     class APIError(Exception):
-        """Fallback API error used when google-genai is not installed."""
+        """Fallback API error."""
 
         pass
 
 try:
     from markdown_it import MarkdownIt
-except ImportError:  # pragma: no cover - the dependency is expected in production
+except ImportError:  # pragma: no cover
     MarkdownIt = None
 
 logger = logging.getLogger(__name__)
@@ -82,7 +82,7 @@ def _build_summary_prompt(payload: dict[str, Any]) -> str:
 
 
 def render_summary_markdown(text: str | None) -> Markup:
-    """Render model output as safe HTML for the result page."""
+    """Render AI output as HTML for the result page."""
     summary_text = text or "No summary available."
     if _markdown_renderer is None:
         return Markup.escape(summary_text).replace("\n", Markup("<br>\n"))
@@ -105,18 +105,7 @@ client: Any | None = None
 
 
 class GeminiGenerationError(Exception):
-    """Raised when a Gemini summary-generation attempt fails outright (SDK/API
-    error, unexpected exception, etc).
-
-    Previously generate_summary() swallowed every failure and returned a plain
-    string such as "No summary available" indistinguishable, to any caller,
-    from a summary Gemini genuinely produced. That made two things impossible:
-    surfacing the real failure reason to the user/logs with any precision, and
-    letting callers avoid treating a failed attempt as a
-    successful one. Callers (app.cache, app.main) must catch this and must NOT:
-    persist it as record.ai_summary, start the per-object regenerate cooldown,
-    or record a rate_limit_events row for the attempt.
-    """
+    """Raised when Gemini summary generation fails."""
 
     def __init__(self, user_message: str, *, retry_after_seconds: int | None = None) -> None:
         self.user_message = user_message
@@ -125,29 +114,23 @@ class GeminiGenerationError(Exception):
 
 
 class GeminiRateLimitedError(GeminiGenerationError):
-    """Raised specifically when Gemini itself reports a rate-limit/quota failure
-    (HTTP 429 / RESOURCE_EXHAUSTED / RPM-TPM-RPD budget), as opposed to a generic
-    4xx/5xx or SDK-level failure. Kept distinct from GeminiGenerationError so a
-    caller that wants to react differently (e.g. a clearer "the AI service is
-    busy" message) can catch it first; anything not caught as this still matches
-    the parent class.
-    """
+    """Raised when Gemini reports a rate-limit or quota error."""
 
 
 def _is_rate_limit_or_quota_error(error: Exception) -> bool:
-    """Best-effort detection for Gemini rate-limit and quota exhaustion failures."""
+    """Detect Gemini rate-limit and quota errors."""
     code = getattr(error, "code", None)
     status_code = getattr(error, "status_code", None)
     status = getattr(error, "status", None)
     
-    # Extract the most descriptive string possible
+    # Extract the most descriptive string possible.
     err_detail = getattr(error, "message", str(error))
     message = str(err_detail).upper()
 
     if code == 429 or status_code == 429 or status == 429 or status == "RESOURCE_EXHAUSTED":
         return True
 
-    # Check for common quota/rate-limit keywords in the error message; uppercase to match message = str(err_detail).upper()
+    # Check for common quota/rate-limit keywords in the error message.
     quota_markers = (
         "RESOURCE_EXHAUSTED",
         "RATE LIMIT",
@@ -165,7 +148,7 @@ def _is_rate_limit_or_quota_error(error: Exception) -> bool:
 
 
 def load_environment() -> None:
-    """Load environment variables from the repository and app-local .env files."""
+    """Load environment variables from the local .env files."""
     module_path = Path(__file__).resolve()
     app_dir = module_path.parent
     root_dir = module_path.parents[1]
@@ -181,16 +164,7 @@ load_environment()
 
 
 async def generate_summary(payload: dict[str, Any]) -> str:
-    """Generate a plain-English summary of an astronomical object.
-
-    Raises GeminiRateLimitedError or GeminiGenerationError (see above) instead of
-    returning a placeholder string when the call fails, so callers can tell a
-    genuine Gemini response apart from a failed attempt and react accordingly
-    (skip persisting it, skip starting cooldowns, skip charging rate-limit quota).
-    A missing/unconfigured API key is deliberately NOT treated as a failure here:
-    it's a static deployment state rather than a per-request failure, so it still
-    returns the placeholder string as before.
-    """
+    """Generate a plain-English summary of an astronomical object."""
     if not client:
         logger.warning(
             "GEMINI_API_KEY is not set -- skipping narrative generation. "
@@ -199,9 +173,8 @@ async def generate_summary(payload: dict[str, Any]) -> str:
         return "No summary available."
 
     try:
-        # Uses the fast, pre-warmed connection pool from the global client
         response = await client.aio.models.generate_content(
-            model="gemini-3.5-flash",  # note: gemini-3.5-flash is the stable production flash model
+            model="gemini-3.5-flash",
             contents=_build_summary_prompt(payload),
         )
         return response.text or "No summary available."

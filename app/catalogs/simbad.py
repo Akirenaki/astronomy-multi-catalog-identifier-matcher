@@ -1,4 +1,4 @@
-"""Helpers for normalizing and resolving SIMBAD identifiers."""
+"""Helpers for resolving SIMBAD identifiers."""
 
 import logging
 import re
@@ -10,28 +10,11 @@ logger = logging.getLogger(__name__)
 
 
 class SimbadLookupError(Exception):
-    """Raised when a SIMBAD request could not be completed -- a transport failure
-    (timeout, connection refused, DNS failure), a bad HTTP status, or a response body
-    that couldn't be parsed. This is deliberately distinct from resolve_identity()
-    returning None, which means "SIMBAD was reached and genuinely has no match for
-    this query." Collapsing both cases into None previously made a firewalled network
-    indistinguishable from a nonexistent star -- see resolver.py's handling of this
-    exception for how the two are now reported separately as LOOKUP_FAILED vs
-    UNRESOLVED."""
+    """Raised when a SIMBAD request could not be completed."""
 
 
 def normalize_query(query_text: str) -> str:
-    """Clean up whitespace/casing and canonicalize catalog-prefixed identifiers.
-
-    SIMBAD's `ident.id` stores the catalog prefix as part of the identifier
-    itself (e.g. "HD 217014", "HIP 113357") — both "HD 217014" and "HD217014"
-    are accepted by SIMBAD's own identifier lookup, but the prefix must stay.
-    Earlier versions of this function stripped the prefix entirely, which
-    turned a valid identifier like "HD 217014" into a bare "217014" that
-    SIMBAD can't resolve. The fix here is to normalize casing on the prefix
-    and guarantee exactly one space between prefix and number, never to
-    remove the prefix.
-    """
+    """Clean up whitespace and normalize common catalog prefixes."""
     cleaned = re.sub(r"\s+", " ", (query_text or "").strip())
     if not cleaned:
         return ""
@@ -45,23 +28,13 @@ def normalize_query(query_text: str) -> str:
 
 
 async def resolve_identity(query_text: str) -> dict | list[dict] | None:
-    """Query SIMBAD for an object identity and return either one candidate or a list of candidates.
-
-    Returns None only when SIMBAD was successfully reached and genuinely has no match
-    for this query. Raises SimbadLookupError when the request itself couldn't be
-    completed (timeout, transport error, bad status, unparseable response) -- the
-    caller should not treat that case as "no match found"."""
+    """Query SIMBAD for an object identity."""
     normalized = normalize_query(query_text)
     if not normalized:
         return None
 
     escaped = normalized.replace("'", "''")
-    # Ask for one more row than we intend to show (see the truncation handling
-    # below) so a query matching more than 10 objects can be distinguished from
-    # one matching exactly 10 -- see EVALUATION.md 1.6. Without the +1, a result
-    # that was silently truncated at the display cap looked identical to a
-    # genuinely complete list of 10, with no way to tell the user more matches
-    # exist.
+    # Ask for one extra row so the UI can detect truncation.
     _DISPLAY_CAP = 10
     query = (
         f"SELECT TOP {_DISPLAY_CAP + 1} basic.main_id, basic.ra, basic.dec, basic.otype, basic.sp_type, ids.ids "
@@ -77,12 +50,7 @@ async def resolve_identity(query_text: str) -> dict | list[dict] | None:
     }
 
     try:
-        # A flat `timeout=20` applies that same 20s budget to connect, read, write, AND
-        # pool-acquisition independently -- so a host that's genuinely unreachable
-        # (firewalled, DNS issue, dead route) still takes up to 20s to fail, which is
-        # indistinguishable from "the server is just slow" while debugging. Splitting
-        # these lets a connection failure surface in ~5s while still giving a legitimately
-        # slow-but-reachable SIMBAD response the full 60s to complete.
+        # Use separate connect/read timeouts so unreachable hosts fail quickly.
         timeout = httpx.Timeout(connect=10.0, read=60.0, write=15.0, pool=10.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
@@ -93,21 +61,15 @@ async def resolve_identity(query_text: str) -> dict | list[dict] | None:
             response.raise_for_status()
             json_data = response.json()
     except httpx.TimeoutException as exc:
-        # A timeout means SIMBAD was never actually reached -- this is a network/
-        # environment problem (firewalled host, dead route, DNS issue), not evidence
-        # that the object doesn't exist. Raise rather than returning None so the
-        # caller can report this honestly instead of as an "unresolved" star.
+        # Treat timeouts as lookup failures rather than no-match results.
         logger.warning("SIMBAD lookup timed out for query_text=%r", normalized)
         raise SimbadLookupError(f"SIMBAD lookup timed out for {normalized!r}") from exc
     except httpx.HTTPError as exc:
-        # Any other HTTP transport or status-layer issue (connection refused, DNS
-        # failure, a 4xx/5xx from raise_for_status()) is likewise a service-reachability
-        # problem, not a genuine "no match" -- log it and raise the same way.
+        # Treat HTTP failures as lookup failures.
         logger.warning("SIMBAD lookup failed for query_text=%r", normalized, exc_info=True)
         raise SimbadLookupError(f"SIMBAD lookup failed for {normalized!r}") from exc
     except Exception as exc:
-        # A response that can't be parsed at all is also a service-side problem
-        # (e.g. SIMBAD changed its response shape) rather than a real "not found".
+        # Treat parsing problems as lookup failures.
         logger.warning("SIMBAD lookup failed for query_text=%r", normalized, exc_info=True)
         raise SimbadLookupError(f"SIMBAD lookup failed for {normalized!r}") from exc
 
@@ -151,7 +113,7 @@ async def resolve_identity(query_text: str) -> dict | list[dict] | None:
     if not rows:
         return None
 
-    # Normalize each SIMBAD row into a consistent structure that the rest of the app can use.
+    # Normalize each SIMBAD row into a consistent structure.
     candidates: list[dict[str, Any]] = []
     for row in rows:
         alias_field = row.get("ids") or row.get("ids.ids") or row.get("ids_ids") or row.get("idsids") or ""
@@ -169,10 +131,7 @@ async def resolve_identity(query_text: str) -> dict | list[dict] | None:
     if len(candidates) == 1:
         return candidates[0]
 
-    # More than _DISPLAY_CAP objects matched this identifier -- truncate to the cap
-    # for display, but flag every returned candidate as truncated so the UI can
-    # tell the user the list is incomplete rather than silently dropping the rest.
-    # See EVALUATION.md 1.6.
+    # Truncate large result sets and mark them as truncated.
     if len(candidates) > _DISPLAY_CAP:
         candidates = candidates[:_DISPLAY_CAP]
         for candidate in candidates:
