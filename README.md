@@ -464,6 +464,7 @@ Was SIMBAD actually reachable, and did it return a usable response?
 
 ### **C. "My saved summary looks different from what's shown to everyone else now; is that a bug?"**
 
+<details>
 <summary><b>View Saved Summary Explanation (Click to expand)</b></summary>
 
 No, this is expected, and it's the point of `user_summary_snapshots`.
@@ -494,7 +495,7 @@ Both checks run on every Generate/Regenerate request; either can reject it indep
 Favorites are tied to a user account. If you are not logged in, the app redirects you to `/login` and then brings you back to the object page after authentication so the action can be completed on the right account.
 
 ### **G. "How is CSRF protection implemented?"**
-
+<details>
 <summary><b>View CSRF Protection Implementation Explanation (Click to expand)</b></summary>
 
 Every mutating route (`/register`, `/login`, `/logout`, favorite/unfavorite, and AI-summary regeneration) requires a CSRF token that must match the one minted for the visitor's own session. Form-based routes carry it as a hidden `csrf_token` field; the one JS-driven route (regenerate-summary, a `fetch()` POST with no form body) sends it as an `X-CSRF-Token` header instead, read from a `<meta name="csrf-token">` tag rendered into every page. The token itself lives in the same signed, `itsdangerous`-backed session cookie the app already uses for login state, so it can't be forged or read cross-origin -- see `app.auth.get_csrf_token`/`verify_csrf_token`.
