@@ -4,9 +4,9 @@
 
 1. [App Description](#i-app-description)
 2. [Tech Stack & Hosting](#ii-tech-stack--hosting)
-3. [App & User Workflow](#iii-app--user-workflow)
-4. [Accounts, Favorites & Personal AI Summaries](#iv-accounts-favorites--personal-ai-summaries)
-5. [Real World Examples](#v-real-world-examples)
+3. [User Workflow](#iii-user-workflow)
+4. [Application Processing Pipeline](#iv-application-processing-pipeline)
+5. [Result Examples](#v-result-examples)
 6. [Database Schema](#vi-database-schema)
 7. [FAQ](#vii-faq)
 8. [Third-Party Data, Services & Legal Notes](#viii-third-party-data-services--legal-notes)
@@ -45,37 +45,83 @@ The resolver, cross-matcher, and AI narrative are fully usable anonymously. An o
 
 ---
 
-## **III. App & User Workflow**
+## **III. User Workflow**
 
-User types in an informal star name ("51 Peg", "HD 217014", even slightly messy input), and it:
+Every core feature — search, cross-matching, and AI summaries — works fully anonymously. Logging in adds personalization on top; nothing is gated behind an account except the things listed in III.A below.
 
-1. **Normalises** the query (fixes whitespace/casing, canonicalizes catalog prefixes like HD/HIP/GJ/TYC without stripping them)
-2. **[Resolves](#a-what-does-resolve-mean)** identity against SIMBAD (the standard astronomical object database) via a TAP/ADQL query, pulling the canonical name, coordinates, spectral type, and every known alias in one round trip
-3. **Cross-matches** those aliases against the NASA Exoplanet Archive in a single batched query (not one HTTP request per alias) to find any known planets orbiting that star
-4. **Classifies** the result into one of [five explicit states](#b-what-are-the-five-states) — `RESOLVED`, `PARTIAL`, `AMBIGUOUS`, `UNRESOLVED`, `LOOKUP_FAILED` — rather than quietly picking one answer or silently failing.
-5. **Caches** the result with a 14-day TTL (1 hour for failed/ambiguous lookups, so bugs self-heal quickly)
-6. **Renders** the result page immediately with the scientific data. The plain-English AI narrative (via the Gemini API) is generated separately on request, via a "Generate AI summary" button. Therefore, a slow Gemini call never blocks the page it's summarizing. Once generated, the narrative is cached the same way the scientific data is, and stays kept strictly separate from it: the AI layer can never corrupt or override what the SQL layer already established.
+### A. Logged-in users
 
-Programmatic access is also available via `GET /api/resolve?q=...`, which returns the same resolution data as JSON instead of HTML.
+Logging in is session-cookie based (email + password, no third-party auth). Once logged in, you additionally get:
+
+- **Saving objects.** Favorite/unfavorite any resolved or partial object from its result page. Your saved list lives at `/account/saved`.
+- **A personal copy of "your" AI summary.** AI summaries are shared globally—one per object, shown to every visitor—but a logged-in user also gets a personal snapshot recording the exact text that existed the moment they generated or last regenerated it. If someone else later regenerates the shared summary, your snapshot doesn't silently change underneath you; you're just shown a note that a newer version exists. (This is the ownership guarantee behind FAQ C.)
+- **A personal Gemini API key (optional).** From `/account/settings`, you can add your own Gemini API key and, optionally, a preferred model. This is a *fallback only*; every generation still tries the app's own shared key first, and your key is only used if that specifically comes back rate-limited/quota-exhausted. Because summaries are shared, generating one with your key unblocks it for every future visitor, not just you; the settings page states this explicitly before you save a key. Your key is encrypted before storage and is never shown back to you or anyone else once saved; the field just shows "a key is currently saved" or not. Clearing the field and saving removes it.
+- **Fair-use protection**, enforced two ways regardless of login state, but tracked per-account rather than per-browser-session once logged in: a 5-minute per-object cooldown on Regenerate, and a 20-requests/hour limit across all objects (see FAQ D).
+
+### B. Anonymous (not logged in) users
+
+No feature requiring scientific correctness is behind a login wall — search, cross-matching, and generating AI summaries all work the same as for a logged-in user. What's different:
+
+- **No saving.** Clicking Favorite redirects you to `/login` first (see FAQ F), then back to the object page once you've logged in.
+- **No personal summary snapshot or personal API key.** You always see the current shared summary as-is; there's nothing to configure a fallback key against without an account to store it on.
+- **Rate limiting still applies**, tracked by an anonymous session cookie rather than a user ID — so it resets if you clear cookies, but also can't be raised by adding your own key, since that requires an account.
+- **`/history` is global** either way (see FAQ E) — recently resolved objects aren't tied to who searched for them.
+
+### C. Running it yourself
+
+1. **Clone and install.**
+
+```bash
+   git clone https://github.com/Akirenaki/astronomy-multi-catalog-cross-matcher.git
+   cd astronomy-multi-catalog-cross-matcher
+   python -m venv .venv && source .venv/bin/activate
+   pip install -r requirements.txt
+```
+
+2. **Create a `.env` file** in `app/` (a repo-root `.env` also works for `GEMINI_API_KEY`/`SESSION_SECRET_KEY` specifically, but `app/.env` is the one that reliably works for everything below; see the caveat under `DATABASE_URL`/`USER_SECRET_ENCRYPTION_KEY`):
+
+   | Variable | Required? | Purpose |
+   | --- | --- | --- |
+   | `GEMINI_API_KEY` | Optional | The app's own shared Gemini key from [Google AI Studio](https://aistudio.google.com/apikey) (No card needed). Without it, AI summaries just show "No summary available."; everything else works normally. |
+   | `DATABASE_URL` | Optional | Defaults to a local SQLite file (`astronomy.db`) if unset — nothing to configure for local dev. Point this at a Postgres connection string (e.g. from [Neon](https://neon.tech/)) for production. **Currently must be set as a real process environment variable, not just `.env`** — see the import-order note above; a `.env`-only value is silently ignored right now. |
+   | `SESSION_SECRET_KEY` | Recommended | Signs login session cookies. Without it, the app runs fine but generates a random key per process, so everyone gets logged out on every restart. Generate one with `python -c "import secrets; print(secrets.token_hex(32))"`. This one *does* work via `.env` today. |
+   | `USER_SECRET_ENCRYPTION_KEY` | Recommended if you'll use personal Gemini keys | Encrypts personal Gemini API keys at rest. Without it, the app runs fine, but any saved personal keys become unreadable after a restart (a random key is generated per process, with a warning logged). Must be a valid Fernet key: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. **Same current limitation as `DATABASE_URL`** — set it as a real environment variable, not just `.env`, until the load-order issue above is fixed. |
+
+3. **Reset the database schema** (safe on a fresh clone; this just creates tables, there's nothing to lose yet):
+
+```bash
+   python reset_db.py
+```
+
+4. **Run it:**
+
+```bash
+   uvicorn app.main:app --reload
+```
+
+See [Section II](#ii-tech-stack--hosting) for what "deployed" (vs. local dev) looks like — this section is specifically about getting it running on your own machine.
 
 ---
 
-## **IV. Accounts, Favorites & Personal AI Summaries**
+## **IV. Application Processing Pipeline**
 
-Accounts are entirely optional; every step above works the same for an anonymous visitor. Logging in (session-cookie based, via email + password) adds three things on top:
+This is what actually happens between a search request and a rendered result; the backend counterpart to Section III. None of these steps are directly visible in the UI as separate moments; they either happen inside a single page load or inside a single background fetch.
 
-- **Saving objects.** A logged-in user can favorite/unfavorite any resolved or partial object from its result page. Their saved list lives at `/account/saved`.
-- **Login redirects for save actions.** If an anonymous visitor tries to favorite or unfavorite an object, the app sends them to `/login` first and returns them to the object page afterward.
-- **A personal copy of "your" AI summary.** Logged-in users get a saved snapshot of the shared summary. See FAQ C for details.
-- **Fair-use protection on AI generation**, enforced in two independent layers:
-  1. **Per-object cooldown (5 minutes).** Stops rapid double-clicking Regenerate on the *same* object. Applies regardless of login state.
-  2. **Per-client rate limit (20 requests/hour).** Stops one client — a logged-in user, or an anonymous browser identified by its session cookie — from spending Gemini quota by clicking Generate across *many different* objects in a short window, which the per-object cooldown alone doesn't prevent.
+1. **Normalise** the query (fix whitespace/casing, canonicalise catalog prefixes like HD/HIP/GJ/TYC without stripping them).
+2. **Check the cache** — first an exact match on the normalized query string, then a fallback through the `query_aliases` table (so a different alias for an already-cached object, or the object's own canonical SIMBAD ID, still hits the cache instead of re-querying). A hit here skips everything below and serves immediately.
+3. **[Resolve](#a-what-does-resolve-mean)** identity against SIMBAD via a TAP/ADQL query: canonical name, coordinates, spectral type, and every known alias, in one round trip.
+4. **Expand aliases** (adding stripped catalog-prefix variants) to maximize the next step's hit rate.
+5. **Cross-match** those aliases against the NASA Exoplanet Archive in a single batched query (not one HTTP request per alias) to find any known orbiting planets.
+6. **Classify** the result into one of [five explicit states](#b-what-are-the-five-states)—`RESOLVED`, `PARTIAL`, `AMBIGUOUS`, `UNRESOLVED`, `LOOKUP_FAILED`—rather than quietly picking one answer or silently failing. A `PARTIAL` result is further flagged if the "no planets" conclusion is itself unconfirmed (the Exoplanet Archive lookup failed, rather than a genuine zero-match).
+7. **Cache** the result: 14-day TTL for a confirmed result, 1 hour for anything unconfirmed or failed (`UNRESOLVED`/`AMBIGUOUS`/`LOOKUP_FAILED`, or a `PARTIAL` with an unconfirmed planet count), so failures self-heal quickly instead of sitting wrong for two weeks.
+8. **Render** the result page with the scientific data only. AI generation is deliberately *not* part of this synchronous path for the HTML `/search` flow; it only runs when the user explicitly clicks Generate (see III.A/III.B), so a slow Gemini call (observed up to ~42s for a single heavily-catalogued star) never blocks the page it's summarizing. **This is asymmetric with the JSON API**: `GET /api/resolve?q=...` *does* generate the AI summary synchronously as part of the same request, since there's no follow-up click available in a pure API context.
+9. **On a Generate/Regenerate request**, call Gemini using the app's own shared key; if that's specifically rate-limited and the requesting user has a personal key configured, retry once with theirs (see III.A). Whichever key succeeds, persist the result as the one shared `ai_summary` for that object, kept strictly separate from the scientific data so the AI layer can never corrupt or override what the SQL layer already established.
 
-See the FAQ for why `/history` stays global, why anonymous save actions redirect to login, and how CSRF protection works.
+Programmatic access to steps 1–7 (without the templated HTML) is available via `GET /api/resolve?q=...`, returning the same resolution data as JSON — see step 8's note on the one behavioral difference from the HTML flow.
 
 ---
 
-## **V. Real-world examples**
+## **V. Result examples**
 
 | Search | Expected state | Why |
 | --- | --- | --- |
@@ -377,7 +423,7 @@ At each step, gains more certainty about what the user was asking for. "Resolve"
     **What happened:** A transport-level failure (connection timeout, DNS failure, connection refused), a bad HTTP status from SIMBAD, or a response body that couldn't be parsed. Crucially, SIMBAD's TAP endpoint was never successfully queried, so nothing was actually checked.
 
     **Why this is a separate state from UNRESOLVED:** Early versions of this app treated every SIMBAD failure — timeouts included — the same as "no match found," which silently reported network problems as if the object didn't exist. A firewalled or unreachable network (e.g. some school/office networks block `simbad.cds.unistra.fr` outright) would then look identical to a genuinely nonexistent star.
-    
+
     `LOOKUP_FAILED` keeps that distinction explicit.
 
     **What the user sees:** A message explaining that the *lookup* failed, not the object, along with a link to retry the same query.
@@ -418,6 +464,8 @@ Was SIMBAD actually reachable, and did it return a usable response?
 
 ### **C. "My saved summary looks different from what's shown to everyone else now; is that a bug?"**
 
+<summary><b>View Saved Summary Explanation (Click to expand)</b></summary>
+
 No, this is expected, and it's the point of `user_summary_snapshots`.
 
 There is exactly one canonical AI summary per object (`objects.ai_summary`), shown to every anonymous visitor and to any logged-in user who hasn't generated their own. If you're logged in and you personally clicked Generate or Regenerate, `/account/saved` shows *your* copy from that moment, even if someone else regenerates the shared version afterward.
@@ -426,12 +474,16 @@ This is an ownership/no-clobber guarantee, not the AI narrative varying its actu
 
 ### **D. "Why two separate limits (a 5-minute cooldown AND a 20/hour rate limit) instead of just one?"**
 
+<summary><b>View Limits Explanation (Click to expand)</b></summary>
+
 They stop different failure modes:
 
-* The **cooldown** is per-*object* — it stops rapid double-clicking Regenerate on the same star. It does nothing to stop someone clicking Generate on twenty different stars in a row.
-* The **rate limit** is per-*client* (logged-in user, or anonymous session) — it stops exactly that: one visitor spending Gemini quota across many different objects in a short window, which the cooldown alone can't see, since it only ever looks at one object at a time.
+- The **cooldown** is per-*object* — it stops rapid double-clicking Regenerate on the same star. It does nothing to stop someone clicking Generate on twenty different stars in a row.
+- The **rate limit** is per-*client* (logged-in user, or anonymous session) — it stops exactly that: one visitor spending Gemini quota across many different objects in a short window, which the cooldown alone can't see, since it only ever looks at one object at a time.
 
 Both checks run on every Generate/Regenerate request; either can reject it independently.
+
+</details>
 
 ### **E. "Why is /history global instead of per-user?"**
 
@@ -443,9 +495,13 @@ Favorites are tied to a user account. If you are not logged in, the app redirect
 
 ### **G. "How is CSRF protection implemented?"**
 
+<summary><b>View CSRF Protection Implementation Explanation (Click to expand)</b></summary>
+
 Every mutating route (`/register`, `/login`, `/logout`, favorite/unfavorite, and AI-summary regeneration) requires a CSRF token that must match the one minted for the visitor's own session. Form-based routes carry it as a hidden `csrf_token` field; the one JS-driven route (regenerate-summary, a `fetch()` POST with no form body) sends it as an `X-CSRF-Token` header instead, read from a `<meta name="csrf-token">` tag rendered into every page. The token itself lives in the same signed, `itsdangerous`-backed session cookie the app already uses for login state, so it can't be forged or read cross-origin -- see `app.auth.get_csrf_token`/`verify_csrf_token`.
 
 There is no minimum password complexity requirement beyond an 8-character floor (`app.auth._MIN_PASSWORD_LENGTH`) -- reasonable for a portfolio project, but worth knowing if you're reusing this auth code elsewhere.
+
+</details>
 
 ### **H. "How do I query the resolver programmatically?"**
 
@@ -457,8 +513,8 @@ Use `GET /api/resolve?q=...`. It returns the same resolution data as the HTML fl
 
 This project depends on a few external data sources and APIs. **None of this project's own code or content is a substitute for reading each service's actual current terms** — this section is a summary, not a legal opinion, and the app itself is a student/portfolio project, not a commercial product.
 
-* **SIMBAD (Strasbourg Astronomical Data Center / CDS).** SIMBAD is the source of the primary object-resolution step (see [Section III](#iii-app--user-workflow)). SIMBAD data is queried live via its public TAP service and cached temporarily (14-day TTL) purely to avoid re-querying the same object repeatedly; nothing is redistributed as a dataset. If you reuse this project or publish derived results, include SIMBAD attribution/citation as required by [CDS's current data-use guidance](https://cds.unistra.fr/), which generally asks that published work using SIMBAD data acknowledge the CDS.
-* **NASA Exoplanet Archive.** Exoplanet cross-match data (orbital period, radius, discovery method/year) comes from NASA's public Exoplanet Archive TAP service, queried live and cached the same way as SIMBAD data. If you reuse this project's catalog output or publish derived results, follow the [Exoplanet Archive's citation guidance](https://exoplanetarchive.ipac.caltech.edu/docs/acknowledge.html).
-* **NASA Image and Video Library (background imagery).** The animated space background pulls images from NASA's public Image and Video Library. NASA media is, with some exceptions (e.g. work by contractors, or content that credits a non-NASA source), generally not copyrighted and free to use, but individual images can carry their own credit line or exception — the app shows an on-page credit for the image currently loaded for exactly this reason. Anyone reusing an image outside this project should check that image's own listing on [images.nasa.gov](https://images.nasa.gov/) and follow NASA's [current media usage guidelines](https://www.nasa.gov/nasa-brand-center/images-and-media/), rather than assuming this project's credit line is a complete rights clearance.
-* **Google Gemini API.** AI-generated summaries (see [Section III](#iii-app--user-workflow)) are produced through Google's Gemini API on its free tier. Any use of that feature — by this deployment or by anyone running their own copy of this project — is subject to Google's current [Gemini API terms of service](https://ai.google.dev/gemini-api/terms) and related usage policies. AI-generated text is clearly presented as a generated summary, not as an independent authoritative source, and it is deliberately kept unable to alter or override the underlying SIMBAD/NASA scientific data (see the architectural principle in [Section I](#i-app-description)).
-* **No warranty.** This project is provided for educational/portfolio purposes. Astronomical data is only as current and accurate as the upstream SIMBAD/NASA services at query time, and AI-generated summaries may contain errors — neither should be relied on for research, publication, or any decision without independently verifying against the primary catalogs.
+- **SIMBAD (Strasbourg Astronomical Data Center / CDS).** SIMBAD is the source of the primary object-resolution step (see [Section III](#iii-user-workflow)). SIMBAD data is queried live via its public TAP service and cached temporarily (14-day TTL) purely to avoid re-querying the same object repeatedly; nothing is redistributed as a dataset. If you reuse this project or publish derived results, include SIMBAD attribution/citation as required by [CDS's current data-use guidance](https://cds.unistra.fr/), which generally asks that published work using SIMBAD data acknowledge the CDS.
+- **NASA Exoplanet Archive.** Exoplanet cross-match data (orbital period, radius, discovery method/year) comes from NASA's public Exoplanet Archive TAP service, queried live and cached the same way as SIMBAD data. If you reuse this project's catalog output or publish derived results, follow the [Exoplanet Archive's citation guidance](https://exoplanetarchive.ipac.caltech.edu/docs/acknowledge.html).
+- **NASA Image and Video Library (background imagery).** The animated space background pulls images from NASA's public Image and Video Library. NASA media is, with some exceptions (e.g. work by contractors, or content that credits a non-NASA source), generally not copyrighted and free to use, but individual images can carry their own credit line or exception — the app shows an on-page credit for the image currently loaded for exactly this reason. Anyone reusing an image outside this project should check that image's own listing on [images.nasa.gov](https://images.nasa.gov/) and follow NASA's [current media usage guidelines](https://www.nasa.gov/nasa-brand-center/images-and-media/), rather than assuming this project's credit line is a complete rights clearance.
+- **Google Gemini API.** AI-generated summaries (see [Section III](#iii-app--user-workflow)) are produced through Google's Gemini API on its free tier. Any use of that feature — by this deployment or by anyone running their own copy of this project — is subject to Google's current [Gemini API terms of service](https://ai.google.dev/gemini-api/terms) and related usage policies. AI-generated text is clearly presented as a generated summary, not as an independent authoritative source, and it is deliberately kept unable to alter or override the underlying SIMBAD/NASA scientific data (see the architectural principle in [Section I](#i-app-description)).
+- **No warranty.** This project is provided for educational/portfolio purposes. Astronomical data is only as current and accurate as the upstream SIMBAD/NASA services at query time, and AI-generated summaries may contain errors — neither should be relied on for research, publication, or any decision without independently verifying against the primary catalogs.
