@@ -3,6 +3,7 @@
 import os
 from collections.abc import AsyncGenerator
 
+from sqlalchemy import event
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -21,6 +22,24 @@ else:
 
 engine = create_async_engine(DATABASE_URL, echo=False, connect_args=_connect_args)
 SessionLocal = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+
+@event.listens_for(engine.sync_engine, "connect")
+def _set_sqlite_pragma(dbapi_connection, connection_record) -> None:
+    """Enable SQLite foreign-key enforcement (including ON DELETE CASCADE) so
+    dev/CI SQLite behaves the same way production Postgres already does by
+    default. SQLite does not enforce foreign keys unless this pragma is issued
+    per connection, so without it, deleting a parent row (e.g. an ObjectRecord)
+    would silently leave dangling child rows in SQLite while Postgres would
+    cascade-delete them -- a dev/prod behavioural divergence.
+
+    Strictly guarded on dialect name: issuing a SQLite PRAGMA against a
+    Postgres connection would error.
+    """
+    if engine.dialect.name == "sqlite":
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 
 
 async def init_db() -> None:

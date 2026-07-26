@@ -266,7 +266,13 @@ async def object_summary_regenerate(
         if object_id is not None:
             await save_user_summary_snapshot(current_user.id, object_id, summary)
 
-    return JSONResponse({"summary": summary, "cooldown_seconds": int(AI_SUMMARY_COOLDOWN.total_seconds())})
+    return JSONResponse(
+        {
+            "summary": summary,
+            "summary_html": render_summary_markdown(summary),
+            "cooldown_seconds": int(AI_SUMMARY_COOLDOWN.total_seconds()),
+        }
+    )
 
 
 @app.get("/api/resolve")

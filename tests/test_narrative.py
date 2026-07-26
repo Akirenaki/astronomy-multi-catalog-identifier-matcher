@@ -34,9 +34,10 @@ async def test_generate_summary_omits_state_and_uses_prompt_instructions(monkeyp
     captured: dict[str, str] = {}
 
     class FakeModels:
-        async def generate_content(self, *, model, contents):
+        async def generate_content(self, *, model, contents, config=None):
             captured["model"] = model
             captured["contents"] = contents
+            captured["config"] = config
             return type("Response", (), {"text": "A concise summary."})()
 
     class FakeClient:
@@ -56,7 +57,7 @@ async def test_generate_summary_omits_state_and_uses_prompt_instructions(monkeyp
     output = await narrative.generate_summary(payload)
 
     assert output == "A concise summary."
-    assert captured["model"] == "gemini-3.5-flash"
+    assert captured["model"] == "gemini-3.6-flash"
     assert "RESOLVED" not in captured["contents"]
     assert "You are an astronomy professor" in captured["contents"]
     assert "Prioritise accuracy over persuasion" in captured["contents"]

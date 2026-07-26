@@ -139,17 +139,18 @@
   function degToDMS(deg, isLat) {
     var sign = deg < 0 ? -1 : 1,
       ad = Math.abs(deg);
-    var d = Math.floor(ad),
-      m = Math.floor((ad - d) * 60),
-      s = Math.round(((ad - d) * 60 - m) * 60);
+    var totalSeconds = Math.round(ad * 3600);
+    var d = Math.floor(totalSeconds / 3600),
+      m = Math.floor((totalSeconds % 3600) / 60),
+      s = totalSeconds % 60;
     var signChar = isLat ? (sign < 0 ? "-" : "+") : sign < 0 ? "-" : "";
     return signChar + d + "\u00b0" + String(m).padStart(2, "0") + "'" + String(s).padStart(2, "0") + '"';
   }
   function degToHMS(deg) {
-    var h = deg / 15,
-      hh = Math.floor(h),
-      mm = Math.floor((h - hh) * 60),
-      ss = Math.round(((h - hh) * 60 - mm) * 60);
+    var totalSeconds = Math.round((deg / 15) * 3600);
+    var hh = Math.floor(totalSeconds / 3600),
+      mm = Math.floor((totalSeconds % 3600) / 60),
+      ss = totalSeconds % 60;
     return String(hh).padStart(2, "0") + "h" + String(mm).padStart(2, "0") + "m" + String(ss).padStart(2, "0") + "s";
   }
 

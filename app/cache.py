@@ -6,7 +6,7 @@ import logging
 import time
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
@@ -100,6 +100,64 @@ async def store_result(resolution_result: ResolutionResult, *, generate_ai_summa
         old_query_texts = {r.query_text for r in candidate_rows}
 
         for stale_row in stale_rows:
+            if primary_row is not None:
+                # Re-point favorites/snapshots/aliases that reference the row
+                # about to be deleted onto the surviving primary_row, so a
+                # user's favorite or personal summary snapshot isn't silently
+                # lost when store_result() merges two previously-separate
+                # candidate rows into one (see TICKET-E).
+                #
+                # SavedSearch and UserSummarySnapshot both carry a
+                # UniqueConstraint("user_id", "object_id"): if the same user
+                # already has a row on both primary_row and stale_row, blindly
+                # re-pointing would violate that constraint. Check for an
+                # existing row on primary_row first and, if found, just drop
+                # the stale duplicate instead (same check-first pattern as
+                # add_favorite() elsewhere in this file).
+                stale_saved_searches = (
+                    await session.execute(select(SavedSearch).where(SavedSearch.object_id == stale_row.id))
+                ).scalars().all()
+                for saved_search in stale_saved_searches:
+                    existing_on_primary = (
+                        await session.execute(
+                            select(SavedSearch).where(
+                                SavedSearch.user_id == saved_search.user_id,
+                                SavedSearch.object_id == primary_row.id,
+                            )
+                        )
+                    ).scalar_one_or_none()
+                    if existing_on_primary is not None:
+                        await session.delete(saved_search)
+                    else:
+                        saved_search.object_id = primary_row.id
+
+                stale_snapshots = (
+                    await session.execute(
+                        select(UserSummarySnapshot).where(UserSummarySnapshot.object_id == stale_row.id)
+                    )
+                ).scalars().all()
+                for snapshot in stale_snapshots:
+                    existing_on_primary = (
+                        await session.execute(
+                            select(UserSummarySnapshot).where(
+                                UserSummarySnapshot.user_id == snapshot.user_id,
+                                UserSummarySnapshot.object_id == primary_row.id,
+                            )
+                        )
+                    ).scalar_one_or_none()
+                    if existing_on_primary is not None:
+                        await session.delete(snapshot)
+                    else:
+                        snapshot.object_id = primary_row.id
+
+                # QueryAlias only has a UniqueConstraint on query_text, not on
+                # (query_text, object_id), so there is no equivalent collision
+                # risk here -- a plain re-point is safe.
+                await session.execute(
+                    update(QueryAlias).where(QueryAlias.object_id == stale_row.id).values(object_id=primary_row.id)
+                )
+                await session.flush()
+
             await session.delete(stale_row)
         if stale_rows:
             await session.flush()

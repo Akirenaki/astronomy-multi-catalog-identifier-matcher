@@ -102,20 +102,22 @@
               </div>
             {% endif %}
           </div>
-          {% if current_user %}
-            {% if favorited %}
-              <form action="/object/{{ object.simbad_main_id | urlencode }}/unfavorite" method="post">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-                <button type="submit" class="favorite-btn favorite-btn--active">★ Saved &mdash; remove</button>
-              </form>
+          {% if object.simbad_main_id %}
+            {% if current_user %}
+              {% if favorited %}
+                <form action="/object/{{ object.simbad_main_id | urlencode }}/unfavorite" method="post">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+                  <button type="submit" class="favorite-btn favorite-btn--active">★ Saved &mdash; remove</button>
+                </form>
+              {% else %}
+                <form action="/object/{{ object.simbad_main_id | urlencode }}/favorite" method="post">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+                  <button type="submit" class="favorite-btn">☆ Save this object</button>
+                </form>
+              {% endif %}
             {% else %}
-              <form action="/object/{{ object.simbad_main_id | urlencode }}/favorite" method="post">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-                <button type="submit" class="favorite-btn">☆ Save this object</button>
-              </form>
+              <a class="favorite-btn" href="/login?next=/object/{{ object.simbad_main_id | urlencode }}">☆ Log in to save</a>
             {% endif %}
-          {% else %}
-            <a class="favorite-btn" href="/login?next=/object/{{ object.simbad_main_id | urlencode }}">☆ Log in to save</a>
           {% endif %}
         </div>
 

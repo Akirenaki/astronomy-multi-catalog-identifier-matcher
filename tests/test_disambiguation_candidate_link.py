@@ -14,6 +14,8 @@ from app.database import engine, init_db
 from app.main import app
 from app.models import Base
 
+from conftest import get_csrf_token
+
 
 @pytest_asyncio.fixture(autouse=True)
 async def _init_db():
@@ -41,3 +43,22 @@ def test_candidate_with_no_main_id_does_not_render_q_none_link(monkeypatch):
     assert "q=None" not in response.text
     # The resolvable candidate's link should still be present and correct.
     assert "/search?q=51%20Peg" in response.text or "/search?q=51+Peg" in response.text
+
+
+def test_unresolved_result_does_not_render_object_none_favorite_link(monkeypatch):
+    """Regression test for F2/TICKET-B: for a logged-in user, an UNRESOLVED result
+    (simbad_main_id is None) must not render a favorite/unfavorite/login-to-save
+    link built from a None main_id, i.e. `/object/None/favorite`."""
+    monkeypatch.setattr("app.resolver.resolve_identity", AsyncMock(return_value=None))
+    monkeypatch.setattr("app.resolver.find_planets", AsyncMock(return_value=([], None, False)))
+
+    with TestClient(app) as client:
+        csrf_token = get_csrf_token(client)
+        client.post(
+            "/register", data={"email": "wolfie@example.com", "password": "hunter22", "csrf_token": csrf_token}
+        )
+        response = client.get("/search?q=gibberish-query-xyz")
+
+    assert response.status_code == 200
+    assert "UNRESOLVED" in response.text
+    assert "/object/None" not in response.text

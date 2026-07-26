@@ -168,3 +168,41 @@ def test_regenerate_route_returns_429_with_retry_after(monkeypatch):
     retry_after = int(second.headers["Retry-After"])
     assert 0 < retry_after <= 300
     assert second.json()["retry_after_seconds"] == retry_after
+
+
+def test_regenerate_route_success_includes_summary_html(monkeypatch):
+    """Regression test for F1: the regenerate route's success response must include
+    summary_html (matching the shape returned by the non-regenerate /summary route),
+    since result.html's wireRegenerateButton() JS reads data.summary_html and falls
+    back to a "No summary available." placeholder if it's missing."""
+    from app.narrative import render_summary_markdown
+
+    monkeypatch.setattr(
+        "app.resolver.resolve_identity",
+        AsyncMock(
+            return_value={
+                "main_id": "* alf Ori",
+                "ra": 88.79,
+                "dec": 7.41,
+                "otype": "Star",
+                "sp_type": "M1-M2Ia-Iab",
+                "aliases": ["Betelgeuse"],
+            }
+        ),
+    )
+    monkeypatch.setattr("app.resolver.find_planets", AsyncMock(return_value=([], None, False)))
+    monkeypatch.setattr("app.cache.generate_summary", AsyncMock(return_value="A regenerated summary."))
+
+    encoded_id = quote("* alf Ori", safe="")
+    with TestClient(app) as client:
+        csrf_token = get_csrf_token(client)
+        client.get("/search?q=Betelgeuse")
+
+        response = client.post(f"/object/{encoded_id}/summary/regenerate", headers={"X-CSRF-Token": csrf_token})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary"] == "A regenerated summary."
+    assert "summary_html" in body
+    assert body["summary_html"] == render_summary_markdown(body["summary"])
+    assert "cooldown_seconds" in body
