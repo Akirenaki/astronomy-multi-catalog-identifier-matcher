@@ -62,7 +62,10 @@ def test_generate_as_logged_in_user_creates_snapshot_row(monkeypatch):
             "/register", data={"email": "wolfie@example.com", "password": "hunter22", "csrf_token": csrf_token}
         )
         client.get("/search?q=Betelgeuse")
-        client.get(f"/object/{encoded_id}/summary")
+        client.post(
+            f"/object/{encoded_id}/summary",
+            headers={"X-CSRF-Token": csrf_token},
+        )
 
     async def _fetch():
         async with cache_mod.SessionLocal() as session:
@@ -84,8 +87,12 @@ def test_generate_as_anonymous_user_creates_no_snapshot(monkeypatch):
     encoded_id = quote("* alf Ori", safe="")
 
     with TestClient(app) as client:
+        csrf_token = get_csrf_token(client)
         client.get("/search?q=Betelgeuse")
-        client.get(f"/object/{encoded_id}/summary")
+        client.post(
+            f"/object/{encoded_id}/summary",
+            headers={"X-CSRF-Token": csrf_token},
+        )
 
     async def _fetch():
         async with cache_mod.SessionLocal() as session:
@@ -113,7 +120,10 @@ def test_account_saved_shows_personal_snapshot_not_someone_elses_regenerate(monk
             "/register", data={"email": "user-a@example.com", "password": "hunter22", "csrf_token": csrf_token_a}
         )
         client_a.get("/search?q=Betelgeuse")
-        client_a.get(f"/object/{encoded_id}/summary")  # A generates "A's summary"
+        client_a.post(
+            f"/object/{encoded_id}/summary",
+            headers={"X-CSRF-Token": csrf_token_a},
+        )  # A generates "A's summary"
         client_a.post(f"/object/{encoded_id}/favorite", data={"csrf_token": csrf_token_a})
 
         # Simulate the cooldown having elapsed so B's regenerate isn't blocked by
@@ -161,15 +171,25 @@ def test_ai_summary_remains_single_global_value_regardless_of_snapshot_count(mon
             "/register", data={"email": "user-a2@example.com", "password": "hunter22", "csrf_token": csrf_token_a}
         )
         client_a.get("/search?q=Betelgeuse")
-        client_a.get(f"/object/{encoded_id}/summary")  # generates the ONE shared summary
+        client_a.post(
+            f"/object/{encoded_id}/summary",
+            headers={"X-CSRF-Token": csrf_token_a},
+        )  # generates the ONE shared summary
 
         csrf_token_b = get_csrf_token(client_b)
         client_b.post(
             "/register", data={"email": "user-b2@example.com", "password": "hunter22", "csrf_token": csrf_token_b}
         )
-        client_b.get(f"/object/{encoded_id}/summary")  # cache hit, no new Gemini call
+        client_b.post(
+            f"/object/{encoded_id}/summary",
+            headers={"X-CSRF-Token": csrf_token_b},
+        )  # cache hit, no new Gemini call
 
-        client_c.get(f"/object/{encoded_id}/summary")  # anonymous cache hit
+        csrf_token_c = get_csrf_token(client_c)
+        client_c.post(
+            f"/object/{encoded_id}/summary",
+            headers={"X-CSRF-Token": csrf_token_c},
+        )  # anonymous cache hit
 
     async def _fetch():
         async with cache_mod.SessionLocal() as session:

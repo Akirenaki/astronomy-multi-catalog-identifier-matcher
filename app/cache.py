@@ -129,9 +129,29 @@ async def store_result(resolution_result: ResolutionResult, *, generate_ai_summa
 
         if primary_row is not None:
             record = primary_row
+            previous_state = record.resolution_state
+            # Capture the previous planet set (by pl_name) *before* the
+            # PlanetRecord rows are deleted below, so we can tell whether the
+            # new resolution actually changed anything. Query directly rather
+            # than via the `planets` relationship, since a lazy load isn't
+            # safe to trigger implicitly under an AsyncSession.
+            previous_planets_result = await session.execute(
+                select(PlanetRecord.pl_name).where(PlanetRecord.object_id == record.id)
+            )
+            previous_planet_names = set(previous_planets_result.scalars().all())
             for field_name, value in fresh_fields.items():
                 setattr(record, field_name, value)
-            # Keep an existing summary when updating the row.
+            # Keep an existing summary when updating the row, UNLESS the new
+            # resolution's state or planet list differs from what was
+            # previously stored -- in that case the existing ai_summary would
+            # describe stale data, so clear it and let the UI fall back to
+            # "Generate AI summary".
+            new_planet_names = {p.get("pl_name", "") for p in resolution_result.planets}
+            if record.ai_summary is not None and (
+                previous_state != resolution_result.state or previous_planet_names != new_planet_names
+            ):
+                record.ai_summary = None
+                record.ai_summary_generated_at = None
             await session.execute(delete(IdentifierRecord).where(IdentifierRecord.object_id == record.id))
             await session.execute(delete(PlanetRecord).where(PlanetRecord.object_id == record.id))
         else:

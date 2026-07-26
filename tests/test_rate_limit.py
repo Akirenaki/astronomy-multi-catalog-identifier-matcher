@@ -100,9 +100,13 @@ def test_anonymous_client_is_rate_limited_across_different_objects(monkeypatch):
     monkeypatch.setattr("app.cache.generate_summary", AsyncMock(return_value="a summary"))
 
     with TestClient(app) as client:
+        csrf_token = get_csrf_token(client)
         # Object 1
         client.get("/search?q=Betelgeuse")
-        r1 = client.get(f"/object/{quote('* alf Ori', safe='')}/summary")
+        r1 = client.post(
+            f"/object/{quote('* alf Ori', safe='')}/summary",
+            headers={"X-CSRF-Token": csrf_token},
+        )
         assert r1.status_code == 200
 
         # Object 2 (a different query_text/main_id, same client/session)
@@ -120,7 +124,10 @@ def test_anonymous_client_is_rate_limited_across_different_objects(monkeypatch):
             ),
         )
         client.get("/search?q=51+Pegasi")
-        r2 = client.get(f"/object/{quote('51 Peg', safe='')}/summary")
+        r2 = client.post(
+            f"/object/{quote('51 Peg', safe='')}/summary",
+            headers={"X-CSRF-Token": csrf_token},
+        )
         assert r2.status_code == 200
 
         # Object 3 -- this is the third Gemini-quota-spending request from the same
@@ -139,7 +146,10 @@ def test_anonymous_client_is_rate_limited_across_different_objects(monkeypatch):
             ),
         )
         client.get("/search?q=Proxima+Cen")
-        r3 = client.get(f"/object/{quote('Proxima Centauri', safe='')}/summary")
+        r3 = client.post(
+            f"/object/{quote('Proxima Centauri', safe='')}/summary",
+            headers={"X-CSRF-Token": csrf_token},
+        )
 
     assert r3.status_code == 429
     assert "Retry-After" in r3.headers
@@ -158,7 +168,10 @@ def test_rate_limit_response_shape_matches_cooldown_response_shape(monkeypatch):
     with TestClient(app) as client:
         csrf_token = get_csrf_token(client)
         client.get("/search?q=Betelgeuse")
-        client.get(f"/object/{quote('* alf Ori', safe='')}/summary")  # consumes the only slot
+        client.post(
+            f"/object/{quote('* alf Ori', safe='')}/summary",
+            headers={"X-CSRF-Token": csrf_token},
+        )  # consumes the only slot
 
         blocked = client.post(
             f"/object/{quote('* alf Ori', safe='')}/summary/regenerate",

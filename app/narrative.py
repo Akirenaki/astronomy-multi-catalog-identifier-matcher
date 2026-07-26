@@ -11,16 +11,21 @@ from typing import Any
 from dotenv import load_dotenv
 from markupsafe import Markup
 
-try:
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
     from google import genai
+    from google.genai import types
     from google.genai.errors import APIError
-except ImportError:  # pragma: no cover
-    genai = None
-
-    class APIError(Exception):
-        """Fallback API error."""
-
-        pass
+else:
+    try:
+        from google import genai
+        from google.genai import types
+        from google.genai.errors import APIError
+    except ImportError:  # pragma: no cover
+        genai = None
+        types = cast(Any, None)
+        APIError = cast(Any, Exception)
 
 try:
     from markdown_it import MarkdownIt
@@ -165,19 +170,26 @@ load_environment()
 
 async def generate_summary(payload: dict[str, Any]) -> str:
     """Generate a plain-English summary of an astronomical object."""
-    if not client:
+    if not client or types is None:
         logger.warning(
-            "GEMINI_API_KEY is not set -- skipping narrative generation. "
+            "GEMINI_API_KEY is not set; skipping narrative generation. "
             "Returning default 'No summary available.' message."
         )
         return "No summary available."
 
     try:
+        config = types.GenerateContentConfig(
+            thinking_config=types.ThinkingConfig(
+                thinking_level=types.ThinkingLevel.LOW,
+            )
+        )
         response = await client.aio.models.generate_content(
-            model="gemini-3.5-flash",
+            model="gemini-3.6-flash",
             contents=_build_summary_prompt(payload),
+            config=config,
         )
         return response.text or "No summary available."
+
     except APIError as e:
         if _is_rate_limit_or_quota_error(e):
             logger.error(

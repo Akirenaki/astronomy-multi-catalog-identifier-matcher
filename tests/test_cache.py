@@ -1,6 +1,6 @@
 """Tests for cache behavior and cached resolution lookups."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 import os
 
@@ -316,6 +316,90 @@ async def test_alias_search_reuses_cached_object_and_preserves_ai_summary(monkey
     assert third.id == first.id
     assert third.ai_summary == "A Sun-like star with one known planet."
     assert simbad_mock.await_count == 2  # unchanged: served from the alias index
+
+
+@pytest.mark.asyncio
+async def test_ai_summary_cleared_on_re_resolution_with_changed_planet_data(monkeypatch):
+    """Regression test for F6/TICKET-04: if a cached row is re-resolved (e.g. after
+    its TTL expires) and the new resolution has a different planet count than the
+    old one, the existing (now stale) ai_summary must be cleared rather than left
+    describing data that's since changed."""
+    simbad_mock = AsyncMock(
+        return_value={
+            "main_id": "51 Peg",
+            "ra": 344.36,
+            "dec": 20.77,
+            "otype": "Star",
+            "sp_type": "G2V",
+            "aliases": ["HD 217014"],
+        }
+    )
+    monkeypatch.setattr("app.resolver.resolve_identity", simbad_mock)
+    monkeypatch.setattr(
+        "app.resolver.find_planets",
+        AsyncMock(return_value=([], "HD 217014", False)),
+    )
+    monkeypatch.setattr(
+        "app.cache.generate_summary", AsyncMock(return_value="A Sun-like star with no known planets.")
+    )
+
+    first = await cache_mod.get_or_resolve("51 Peg")
+    assert first.ai_summary == "A Sun-like star with no known planets."
+
+    # Force the row to look expired so the next get_or_resolve() genuinely
+    # re-resolves rather than serving the cache hit.
+    async with cache_mod.SessionLocal() as session:
+        row = await session.get(cache_mod.ObjectRecord, first.id)
+        row.expires_at = datetime.now(timezone.utc) - timedelta(hours=1)
+        await session.commit()
+
+    # Re-resolve with a newly-discovered planet.
+    monkeypatch.setattr(
+        "app.resolver.find_planets",
+        AsyncMock(return_value=([{"pl_name": "51 Peg b", "pl_letter": "b"}], "HD 217014", False)),
+    )
+
+    second = await cache_mod.get_or_resolve("51 Peg", generate_ai_summary=False)
+    assert second.id == first.id
+    assert second.ai_summary is None
+    assert second.ai_summary_generated_at is None
+
+
+@pytest.mark.asyncio
+async def test_ai_summary_preserved_on_re_resolution_with_unchanged_planet_data(monkeypatch):
+    """Companion to the test above: re-resolving with an *unchanged* planet set
+    and state must leave the existing ai_summary untouched."""
+    simbad_mock = AsyncMock(
+        return_value={
+            "main_id": "51 Peg",
+            "ra": 344.36,
+            "dec": 20.77,
+            "otype": "Star",
+            "sp_type": "G2V",
+            "aliases": ["HD 217014"],
+        }
+    )
+    monkeypatch.setattr("app.resolver.resolve_identity", simbad_mock)
+    monkeypatch.setattr(
+        "app.resolver.find_planets",
+        AsyncMock(return_value=([{"pl_name": "51 Peg b", "pl_letter": "b"}], "HD 217014", False)),
+    )
+    monkeypatch.setattr(
+        "app.cache.generate_summary", AsyncMock(return_value="A Sun-like star with one known planet.")
+    )
+
+    first = await cache_mod.get_or_resolve("51 Peg")
+    assert first.ai_summary == "A Sun-like star with one known planet."
+
+    async with cache_mod.SessionLocal() as session:
+        row = await session.get(cache_mod.ObjectRecord, first.id)
+        row.expires_at = datetime.now(timezone.utc) - timedelta(hours=1)
+        await session.commit()
+
+    # Re-resolve with the exact same planet (same pl_name) and state.
+    second = await cache_mod.get_or_resolve("51 Peg", generate_ai_summary=False)
+    assert second.id == first.id
+    assert second.ai_summary == "A Sun-like star with one known planet."
 
 
 @pytest.mark.asyncio

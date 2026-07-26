@@ -6,7 +6,10 @@ from collections.abc import AsyncGenerator
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.config import load_environment
 from app.models import Base
+
+load_environment()
 
 _raw_database_url = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./astronomy.db")
 _connect_args: dict = {}

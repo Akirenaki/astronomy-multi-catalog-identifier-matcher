@@ -55,6 +55,45 @@ async def test_create_user_duplicate_email_raises_cleanly():
         await auth_mod.create_user(email="wolfie@example.com", password="second-password")
 
 
+@pytest.mark.asyncio
+async def test_authenticate_returns_none_for_unknown_email():
+    """Sanity check on the behaviour, independent of the timing fix below."""
+    result = await auth_mod.authenticate("nobody@example.com", "whatever")
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_authenticate_runs_bcrypt_check_even_for_unknown_email(monkeypatch):
+    """Regression test for F9/TICKET-07: authenticating against an email that
+    doesn't exist must still call verify_password() (and therefore pay bcrypt's
+    cost), rather than returning immediately -- otherwise the login endpoint's
+    response time leaks whether a given email is registered."""
+    calls = []
+    real_verify_password = auth_mod.verify_password
+
+    def spy_verify_password(password, password_hash):
+        calls.append(password_hash)
+        return real_verify_password(password, password_hash)
+
+    monkeypatch.setattr(auth_mod, "verify_password", spy_verify_password)
+
+    result = await auth_mod.authenticate("nobody@example.com", "whatever")
+
+    assert result is None
+    assert len(calls) == 1
+    # It must have checked against the fixed dummy hash, not skipped the call.
+    assert calls[0] == auth_mod._DUMMY_PASSWORD_HASH
+
+
+@pytest.mark.asyncio
+async def test_authenticate_succeeds_for_correct_known_credentials():
+    """Companion test: the known-user path must still work correctly."""
+    await auth_mod.create_user(email="wolfie@example.com", password="hunter22")
+    result = await auth_mod.authenticate("wolfie@example.com", "hunter22")
+    assert result is not None
+    assert result.email == "wolfie@example.com"
+
+
 # --- route-level tests --------------------------------------------------------
 
 def test_register_route_creates_account_and_logs_in():

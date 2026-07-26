@@ -15,18 +15,32 @@
         {% if object.candidates %}
           <div class="candidate-list">
             {% for candidate in object.candidates %}
-              <a class="candidate" href="/search?q={{ candidate.main_id | urlencode }}">
-                <div>
-                  <div class="candidate__id">{{ candidate.main_id or '—' }}</div>
-                  <div class="candidate__meta">
-                    {{ candidate.otype or 'unknown type' }}{% if candidate.sp_type %} &middot; {{ candidate.sp_type }}{% endif %}
-                    {% if candidate.ra is not none and candidate.dec is not none %}
-                      &middot; RA {{ candidate.ra }}, Dec {{ candidate.dec }}
-                    {% endif %}
+              {% if candidate.main_id %}
+                <a class="candidate" href="/search?q={{ candidate.main_id | urlencode }}">
+                  <div>
+                    <div class="candidate__id">{{ candidate.main_id or '—' }}</div>
+                    <div class="candidate__meta">
+                      {{ candidate.otype or 'unknown type' }}{% if candidate.sp_type %} &middot; {{ candidate.sp_type }}{% endif %}
+                      {% if candidate.ra is not none and candidate.dec is not none %}
+                        &middot; RA {{ candidate.ra }}, Dec {{ candidate.dec }}
+                      {% endif %}
+                    </div>
+                  </div>
+                  <span class="candidate__arrow">&rarr;</span>
+                </a>
+              {% else %}
+                <div class="candidate">
+                  <div>
+                    <div class="candidate__id">{{ candidate.main_id or '—' }}</div>
+                    <div class="candidate__meta">
+                      {{ candidate.otype or 'unknown type' }}{% if candidate.sp_type %} &middot; {{ candidate.sp_type }}{% endif %}
+                      {% if candidate.ra is not none and candidate.dec is not none %}
+                        &middot; RA {{ candidate.ra }}, Dec {{ candidate.dec }}
+                      {% endif %}
+                    </div>
                   </div>
                 </div>
-                <span class="candidate__arrow">&rarr;</span>
-              </a>
+              {% endif %}
             {% endfor %}
           </div>
         {% else %}
@@ -363,7 +377,10 @@
           textEl.style.display = '';
           textEl.classList.add('ai-summary-loading');
 
-          fetch('/object/' + encodeURIComponent(simbadId) + '/summary')
+          fetch('/object/' + encodeURIComponent(simbadId) + '/summary', {
+            method: 'POST',
+            headers: { 'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content }
+          })
             .then(function (response) {
               if (response.status === 429) {
                 // Our own per-client throttling -- the user has to actually wait.

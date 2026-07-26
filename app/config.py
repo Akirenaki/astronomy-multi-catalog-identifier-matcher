@@ -1,0 +1,34 @@
+"""Shared environment/configuration loading.
+
+`app/database.py` needs `DATABASE_URL` (and any future config var such as
+`USER_SECRET_ENCRYPTION_KEY`) to be populated from `.env`/`app/.env` before
+it reads them via `os.getenv()` at module import time. This module provides
+that loading so `app/database.py` can call it at the very top of the file,
+before its own `os.getenv()` calls.
+
+`app/narrative.py` has its own `load_environment()` with equivalent logic
+(loaded independently, since it also needs to (re)initialise the Gemini
+client afterwards) -- `load_dotenv()` is safe to call more than once, so
+there is no conflict between the two call sites.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+
+def load_environment() -> None:
+    """Load environment variables from the local .env files.
+
+    Root `.env` is loaded first (without overriding real process
+    environment variables), then `app/.env` is loaded with override=True
+    so it takes precedence over the root `.env`.
+    """
+    module_path = Path(__file__).resolve()
+    app_dir = module_path.parent
+    root_dir = module_path.parents[1]
+
+    load_dotenv(dotenv_path=root_dir / ".env", override=False)
+    load_dotenv(dotenv_path=app_dir / ".env", override=True)

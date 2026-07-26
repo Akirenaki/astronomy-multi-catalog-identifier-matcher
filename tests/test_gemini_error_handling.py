@@ -27,6 +27,8 @@ from app.main import app
 from app.models import Base, ObjectRecord, RateLimitEvent
 from app.narrative import GeminiGenerationError, GeminiRateLimitedError
 
+from conftest import get_csrf_token
+
 
 @pytest_asyncio.fixture(autouse=True)
 async def _init_db():
@@ -132,7 +134,10 @@ def test_generate_route_returns_503_with_message_on_gemini_failure(monkeypatch):
             AsyncMock(side_effect=GeminiGenerationError("The AI summary service returned an error.")),
         )
 
-        response = client.get(f"/object/{quote('* alf Ori', safe='')}/summary")
+        response = client.post(
+            f"/object/{quote('* alf Ori', safe='')}/summary",
+            headers={"X-CSRF-Token": get_csrf_token(client)},
+        )
 
     assert response.status_code == 503
     body = response.json()
@@ -167,13 +172,20 @@ def test_generate_route_does_not_record_rate_limit_usage_on_failure(monkeypatch)
             "app.cache.generate_summary",
             AsyncMock(side_effect=GeminiGenerationError("fail 1")),
         )
-        r1 = client.get(f"/object/{quote('* alf Ori', safe='')}/summary")
+        csrf_token = get_csrf_token(client)
+        r1 = client.post(
+            f"/object/{quote('* alf Ori', safe='')}/summary",
+            headers={"X-CSRF-Token": csrf_token},
+        )
         assert r1.status_code == 503
 
         # limit=1 would reject this as a second attempt if the failed call above
         # had recorded usage; it must not have.
         monkeypatch.setattr("app.cache.generate_summary", AsyncMock(return_value="a real summary"))
-        r2 = client.get(f"/object/{quote('* alf Ori', safe='')}/summary")
+        r2 = client.post(
+            f"/object/{quote('* alf Ori', safe='')}/summary",
+            headers={"X-CSRF-Token": csrf_token},
+        )
 
     assert r2.status_code == 200
     assert r2.json()["summary"] == "a real summary"

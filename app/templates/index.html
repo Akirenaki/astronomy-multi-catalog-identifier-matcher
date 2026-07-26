@@ -2,6 +2,11 @@
 {% block title %}Astronomy Multi-Catalog Cross-Matcher{% endblock %}
 {% block page_modifier %} page--narrow{% endblock %}
 {% block content %}
+  {% if error %}
+    <div class="card alert alert--error mb-4">
+      <p>{{ error }}</p>
+    </div>
+  {% endif %}
   <div class="card">
     <h1>Resolve an object across SIMBAD &amp; the Exoplanet Archive</h1>
     <p class="text-secondary text-sm">

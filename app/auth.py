@@ -14,6 +14,11 @@ from app.models import User
 _MAX_PASSWORD_BYTES = 72
 _MIN_PASSWORD_LENGTH = 8
 
+# A fixed, valid bcrypt hash with no corresponding real password. Used solely so
+# that authenticate() can run a checkpw() call of realistic cost on the
+# "no such user" path -- see authenticate()'s docstring below for why.
+_DUMMY_PASSWORD_HASH = bcrypt.hashpw(b"dummy-password-for-timing", bcrypt.gensalt()).decode("utf-8")
+
 
 class DuplicateEmailError(Exception):
     """Raised when an email is already registered."""
@@ -69,9 +74,18 @@ async def get_user_by_id(user_id: int) -> User | None:
 
 
 async def authenticate(email: str, password: str) -> User | None:
-    """Verify credentials."""
+    """Verify credentials.
+
+    Always performs a bcrypt.checkpw()-equivalent comparison, even when the
+    email doesn't exist, by checking the supplied password against a fixed
+    dummy hash in that case. Without this, an unknown email would return
+    immediately (no bcrypt call), while a known email always pays bcrypt's
+    ~O(100ms) cost -- a timing side-channel an attacker could use to enumerate
+    registered emails.
+    """
     user = await get_user_by_email(email)
     if user is None:
+        verify_password(password, _DUMMY_PASSWORD_HASH)
         return None
     if not verify_password(password, user.password_hash):
         return None

@@ -23,6 +23,8 @@ from app.database import engine, init_db
 from app.main import app
 from app.models import Base
 
+from conftest import get_csrf_token
+
 
 @pytest_asyncio.fixture(autouse=True)
 async def _init_db():
@@ -102,7 +104,10 @@ def test_object_summary_route_generates_and_returns_json(monkeypatch):
         assert search_response.status_code == 200
         summary_mock.assert_not_awaited()
 
-        summary_response = client.get(f"/object/{quote('* alf Ori', safe='')}/summary")
+        summary_response = client.post(
+            f"/object/{quote('* alf Ori', safe='')}/summary",
+            headers={"X-CSRF-Token": get_csrf_token(client)},
+        )
 
     assert summary_response.status_code == 200
     assert summary_response.json() == {
@@ -132,7 +137,10 @@ def test_object_summary_route_returns_rendered_markdown(monkeypatch):
 
     with TestClient(app) as client:
         client.get("/search?q=Betelgeuse")
-        summary_response = client.get(f"/object/{quote('* alf Ori', safe='')}/summary")
+        summary_response = client.post(
+            f"/object/{quote('* alf Ori', safe='')}/summary",
+            headers={"X-CSRF-Token": get_csrf_token(client)},
+        )
         profile_response = client.get(f"/object/{quote('* alf Ori', safe='')}")
 
     assert "<strong>bright</strong>" in summary_response.json()["summary_html"]
@@ -161,7 +169,10 @@ def test_object_profile_renders_regenerate_button_when_summary_exists(monkeypatc
     encoded_id = quote("* alf Ori", safe="")
     with TestClient(app) as client:
         client.get("/search?q=Betelgeuse")
-        client.get(f"/object/{encoded_id}/summary")  # generates and persists the summary
+        client.post(
+            f"/object/{encoded_id}/summary",
+            headers={"X-CSRF-Token": get_csrf_token(client)},
+        )  # generates and persists the summary
         response = client.get(f"/object/{encoded_id}")
 
     assert response.status_code == 200
@@ -173,7 +184,11 @@ def test_object_profile_renders_regenerate_button_when_summary_exists(monkeypatc
 def test_object_summary_route_returns_404_for_unknown_id():
     """A stale or mistyped id in the URL must produce a clean 404, not a 500."""
     with TestClient(app) as client:
-        response = client.get("/object/this-id-does-not-exist/summary")
+        token = get_csrf_token(client)
+        response = client.post(
+            "/object/this-id-does-not-exist/summary",
+            headers={"X-CSRF-Token": token},
+        )
 
     assert response.status_code == 404
 
@@ -207,7 +222,10 @@ def test_object_summary_cache_hit_does_not_consume_rate_limit_quota(monkeypatch)
     encoded_id = quote("* alf Ori", safe="")
     with TestClient(app) as client:
         client.get("/search?q=Betelgeuse")
-        first = client.get(f"/object/{encoded_id}/summary")  # generates, consumes the only slot
+        first = client.post(
+            f"/object/{encoded_id}/summary",
+            headers={"X-CSRF-Token": get_csrf_token(client)},
+        )  # generates, consumes the only slot
         assert first.status_code == 200
         summary_mock.assert_awaited_once()
 
@@ -216,7 +234,10 @@ def test_object_summary_cache_hit_does_not_consume_rate_limit_quota(monkeypatch)
         # keep succeeding, because none of them should be charged against the
         # budget in the first place.
         for _ in range(3):
-            again = client.get(f"/object/{encoded_id}/summary")
+            again = client.post(
+                f"/object/{encoded_id}/summary",
+                headers={"X-CSRF-Token": get_csrf_token(client)},
+            )
             assert again.status_code == 200
             assert again.json()["summary"] == "A red supergiant."
 

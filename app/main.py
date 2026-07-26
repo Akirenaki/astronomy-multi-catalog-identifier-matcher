@@ -5,10 +5,11 @@ import logging
 import os
 import secrets
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from markupsafe import Markup
 from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Request
+from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -52,6 +53,13 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# Rate limit applied to /search and /api/resolve, separate from the
+# AI-summary rate limit (which uses subject_type "user"/"session"). These
+# routes hit shared external services (SIMBAD/NASA Exoplanet Archive) on
+# every novel query, so they get their own, higher ceiling.
+RESOLVE_RATE_LIMIT = 60
+RESOLVE_RATE_LIMIT_WINDOW = timedelta(hours=1)
 
 
 @asynccontextmanager
@@ -111,13 +119,32 @@ async def home(request: Request, current_user: User | None = Depends(get_current
 
 @app.get("/search", response_class=HTMLResponse)
 async def search(
-    request: Request, q: str | None = None, current_user: User | None = Depends(get_current_user)
+    request: Request,
+    q: str | None = Query(None, max_length=200),
+    current_user: User | None = Depends(get_current_user),
 ) -> HTMLResponse:
     """Resolve a search query or show the landing page when empty."""
     if not q:
         template = env.get_template("index.html")
         html = template.render(request=request, current_user=current_user)
         return HTMLResponse(content=html)
+
+    subject_type = "resolve_user" if current_user is not None else "resolve_session"
+    subject_id = str(current_user.id) if current_user is not None else get_session_id(request)
+    try:
+        await check_limit(subject_type, subject_id, limit=RESOLVE_RATE_LIMIT, window=RESOLVE_RATE_LIMIT_WINDOW)
+    except RateLimitExceededError as exc:
+        template = env.get_template("index.html")
+        html = template.render(
+            request=request,
+            current_user=current_user,
+            error=(
+                "You've made too many searches recently. "
+                f"Please try again in about {exc.retry_after_seconds} seconds."
+            ),
+        )
+        return HTMLResponse(content=html, status_code=429)
+    await record_usage(subject_type, subject_id)
 
     # Resolve the query and render the result page.
     result = await get_or_resolve(q, generate_ai_summary=False)
@@ -155,7 +182,7 @@ def _gemini_error_response(exc: GeminiGenerationError) -> JSONResponse:
     return JSONResponse(body, status_code=503)
 
 
-@app.get("/object/{simbad_main_id}/summary")
+@app.post("/object/{simbad_main_id}/summary", dependencies=[Depends(require_csrf_header)])
 async def object_summary(
     request: Request, simbad_main_id: str, current_user: User | None = Depends(get_current_user)
 ) -> JSONResponse:
@@ -243,10 +270,27 @@ async def object_summary_regenerate(
 
 
 @app.get("/api/resolve")
-async def api_resolve(q: str | None = None) -> JSONResponse:
+async def api_resolve(
+    request: Request,
+    q: str | None = Query(None, max_length=200),
+    current_user: User | None = Depends(get_current_user),
+) -> JSONResponse:
     """Expose the resolver as a JSON API."""
     if not q:
         return JSONResponse({"error": "Missing query"}, status_code=400)
+
+    subject_type = "resolve_user" if current_user is not None else "resolve_session"
+    subject_id = str(current_user.id) if current_user is not None else get_session_id(request)
+    try:
+        await check_limit(subject_type, subject_id, limit=RESOLVE_RATE_LIMIT, window=RESOLVE_RATE_LIMIT_WINDOW)
+    except RateLimitExceededError as exc:
+        response = JSONResponse(
+            {"error": "Rate limit exceeded", "retry_after_seconds": exc.retry_after_seconds},
+            status_code=429,
+        )
+        response.headers["Retry-After"] = str(exc.retry_after_seconds)
+        return response
+    await record_usage(subject_type, subject_id)
 
     result = await get_or_resolve(q)
     return JSONResponse(result.to_dict())

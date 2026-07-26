@@ -210,7 +210,10 @@ class RateLimitEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (
-        CheckConstraint("subject_type IN ('user','session')", name="ck_rate_limit_subject_type"),
+        CheckConstraint(
+            "subject_type IN ('user','session','resolve_user','resolve_session')",
+            name="ck_rate_limit_subject_type",
+        ),
         # check_limit() filters by exactly (subject_type, subject_id, created_at) on
         # every AI-summary request -- see EVALUATION.md suggestion #5. Without this,
         # that query does a full table scan as rate_limit_events grows.
