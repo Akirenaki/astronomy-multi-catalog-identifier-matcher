@@ -17,7 +17,7 @@
 
 An FastAPI WebApp that takes an unstructured, informally-typed star name, resolves it deterministically across independent astronomical catalogs via a cross-identification pipeline, and then, as a distinct, separate step, translates the resulting structured data into a plain-language explanation a non-specialist can actually read.
 
-**Architectural principle:** the resolution engine (deterministic, SQL/ADQL-driven) and the narrative layer (AI-generated) are kept strictly separate: the AI layer can never affect matching logic or introduce a factual error the SQL layer didn't already contain.
+**Architectural principle:** the deterministic resolution engine and the narrative layer are kept strictly separate: the AI layer can never affect matching logic or introduce a factual error the SQL layer didn't already contain.
 
 The resolver, cross-matcher, and AI narrative are fully usable anonymously. An optional account layer sits on top for anyone who wants to save objects and keep a personal copy of the AI narratives they generate. See [Section IV](#iv-application-processing-pipeline).
 
@@ -30,39 +30,39 @@ The resolver, cross-matcher, and AI narrative are fully usable anonymously. An o
 | **Web framework** | [FastAPI](https://fastapi.tiangolo.com/) | Async-native Python framework with built-in request/response validation via Pydantic. Chosen so the app can `await` external catalog/AI calls (SIMBAD, NASA Exoplanet Archive, Gemini) without blocking the whole process on a slow network call. |
 | **ASGI server** | [Uvicorn](https://www.uvicorn.org/) | The reference ASGI server FastAPI is built to run under. Used locally with `--reload` for hot-reloading during development. |
 | **HTTP client** | [httpx](https://www.python-httpx.org/) | Async HTTP client used for all outbound calls to SIMBAD's and NASA's TAP/ADQL endpoints. |
-| **ORM / DB toolkit** | [SQLAlchemy](https://www.sqlalchemy.org/) (async) | Defines the schema (`objects`, `identifiers`, `planets`, `users`, `saved_searches`, `user_summary_snapshots`, `rate_limit_events` — see [Section VI](#vi-database-schema)) and handles querying/caching logic without hand-written SQL for most operations. |
+| **ORM / DB toolkit** | [SQLAlchemy](https://www.sqlalchemy.org/) (async) | Defines the [schema](#vi-database-schema) (`objects`, `identifiers`, `planets`, `users`, `saved_searches`, `user_summary_snapshots`, `rate_limit_events`) and handles querying/caching logic without hand-written SQL for most operations. |
 | **Database driver** | `aiosqlite` (local dev) / `asyncpg` (production) | SQLAlchemy's async engine needs an async-capable driver. SQLite (`aiosqlite`) is used for local development because it needs zero setup; `asyncpg` talks to the production Postgres database. |
-| **Database (production)** | [Neon](https://neon.tech/) (serverless Postgres) | Free-tier, always-on-URL Postgres — no local Postgres install required, and it's what the app's `DATABASE_URL` points at once deployed. Chosen over SQLite-in-production because SQLite's on-disk file cannot safely be relied on in a hosting environment with an ephemeral filesystem (see [hosting note](#hosting-render) below). |
-| **Templating** | [Jinja2](https://jinja.palletsprojects.com/) | Server-side HTML rendering for all pages (`result.html`, `history.html`, account pages, etc.), kept deliberately simple/server-rendered rather than adding a separate frontend framework. Autoescaping is explicitly enabled (`select_autoescape(["html"])`) — a plain `jinja2.Environment` defaults to autoescape *off*, unlike FastAPI's `Jinja2Templates`, so this has to be set explicitly rather than assumed. |
+| **Database (production)** | [Neon](https://neon.tech/) (serverless Postgres) | Free-tier, always-on-URL Postgres; no local Postgres install required, and it's what the app's `DATABASE_URL` points at once deployed. Chosen over SQLite-in-production because SQLite's on-disk file cannot safely be relied on in a hosting environment with an ephemeral filesystem (see [hosting note](#hosting-render) below). |
+| **Templating** | [Jinja2](https://jinja.palletsprojects.com/) | Server-side HTML rendering for all pages (`result.html`, `history.html`, account pages, etc.), kept deliberately simple/server-rendered rather than adding a separate frontend framework. Autoescaping is explicitly enabled (`select_autoescape(["html"])`). |
 | **Data validation** | [Pydantic](https://docs.pydantic.dev/) | Comes bundled with FastAPI; validates request/response shapes and config/environment variables. |
 | **AI narrative generation** | [Google Gemini API](https://ai.google.dev/) (`google-genai`, free tier) | Generates the plain-English summary layer; kept strictly separate from the deterministic SQL/ADQL resolution layer so it can never introduce a factual error the catalog data didn't already contain. |
-| **Auth** | Starlette `SessionMiddleware` + `bcrypt` | Session-cookie based login (no separate session-token table — see the `users` table in [Section VI](#vi-database-schema)). Passwords are hashed with bcrypt, must be at least 8 characters, and are never stored or logged in plaintext. All mutating POST routes (register/login/logout/favorite/unfavorite/regenerate) are protected by a session-bound CSRF token — see FAQ [G](#g-how-is-csrf-protection-implemented). |
+| **Auth** | Starlette `SessionMiddleware` + `bcrypt` | Session-cookie based login (no separate session-token table; see the `users` table in [Section VI](#vi-database-schema)). Passwords are hashed with bcrypt, must be at least 8 characters, and are never stored or logged in plaintext. All mutating POST routes (register/login/logout/favorite/unfavorite/regenerate) are protected by a session-bound CSRF token; see [FAQ](#f-how-is-csrf-protection-implemented). |
 | **Markdown rendering** | `markdown-it-py` | Renders the Gemini-generated summary text (plain Markdown, no HTML) safely into HTML for display. |
 | **Testing** | `pytest` / `pytest-asyncio` | Unit and route-level tests across the resolver, cache, rate-limiting, and summary-generation logic. |
 
 <a id="hosting-render"></a>
-**Hosting (planned):** The intended deployment target is [Render](https://render.com/) (free-tier web service), connected to this GitHub repo for automatic redeploys on push. **This is not yet live** — deployment is still a planned next step, currently blocked on a free-tier card-verification issue. The app already reads its database connection from a `DATABASE_URL` environment variable specifically so it can point at Neon in production without any code changes.
+**Hosting (planned):** The intended deployment target is [Render](https://render.com/) (free-tier web service), connected to this GitHub repo for automatic redeploys on push. **This is not yet live**; deployment is still a planned next step, currently blocked on a free-tier card-verification issue. The app already reads its database connection from a `DATABASE_URL` environment variable specifically so it can point at Neon in production without any code changes.
 
 ---
 
 ## **III. User Workflow**
 
-Every core feature — search, cross-matching, and AI summaries — works fully anonymously. Logging in adds personalization on top; nothing is gated behind an account except the things listed in III.A below.
+Every core feature works fully anonymously. Logging in adds personalization on top; nothing is gated behind an account except the things listed in III.A below.
 
 ### A. Logged-in users
 
 Logging in is session-cookie based (email + password, no third-party auth). Once logged in, you additionally get:
 
-- **Saving objects.** Favorite/unfavorite any resolved or partial object from its result page. Your saved list lives at `/account/saved`.
+- **Saving objects.** Favourite/unfavourite any resolved or partial object from its result page. Your saved list lives at `/account/saved`.
 - **A personal copy of "your" AI summary.** AI summaries are shared globally—one per object, shown to every visitor—but a logged-in user also gets a personal snapshot recording the exact text that existed the moment they generated or last regenerated it. If someone else later regenerates the shared summary, your snapshot doesn't silently change underneath you; you're just shown a note that a newer version exists. (This is the ownership guarantee behind FAQ C.)
 - **A personal Gemini API key (optional).** From `/account/settings`, you can add your own Gemini API key and, optionally, a preferred model. This is a *fallback only*; every generation still tries the app's own shared key first, and your key is only used if that specifically comes back rate-limited/quota-exhausted. Because summaries are shared, generating one with your key unblocks it for every future visitor, not just you; the settings page states this explicitly before you save a key. Your key is encrypted before storage (see `USER_SECRET_ENCRYPTION_KEY` below) and is never shown back to you or anyone else once saved; the field just shows "a key is currently saved" or not. Clearing the field and saving removes it. You can change your preferred model without re-entering the key, since the key is never decrypted back for display.
 - **Fair-use protection**, enforced two ways regardless of login state, but tracked per-account rather than per-browser-session once logged in: a 5-minute per-object cooldown on Regenerate, and a 20-requests/hour limit across all objects (see FAQ D).
 
 ### B. Anonymous (not logged in) users
 
-No feature requiring scientific correctness is behind a login wall — search, cross-matching, and generating AI summaries all work the same as for a logged-in user. What's different:
+No feature requiring scientific correctness is behind a login wall; search, cross-matching, and generating AI summaries all work the same as for a logged-in user. What's different:
 
-- **No saving.** Clicking Favorite redirects you to `/login` first (see FAQ F), then back to the object page once you've logged in.
+- **No saving.** Clicking Favorite redirects you to `/login` first, then back to the object page once you've logged in.
 - **No personal summary snapshot or personal API key.** You always see the current shared summary as-is; there's nothing to configure a fallback key against without an account to store it on.
 - **Rate limiting still applies**, tracked by an anonymous session cookie rather than a user ID — so it resets if you clear cookies, but also can't be raised by adding your own key, since that requires an account.
 - **`/history` is global** either way (see FAQ E) — recently resolved objects aren't tied to who searched for them.
@@ -83,9 +83,9 @@ No feature requiring scientific correctness is behind a login wall — search, c
    | Variable | Required? | Purpose |
    | --- | --- | --- |
    | `GEMINI_API_KEY` | Optional | The app's own shared Gemini key from [Google AI Studio](https://aistudio.google.com/apikey) (No card needed). Without it, AI summaries just show "No summary available."; everything else works normally. |
-   | `DATABASE_URL` | Optional | Defaults to a local SQLite file (`astronomy.db`) if unset — nothing to configure for local dev. Point this at a Postgres connection string (e.g. from [Neon](https://neon.tech/)) for production. Setting it in `app/.env` alone is honoured — `load_environment()` runs before this variable is read — see `tests/test_config_load_order.py::test_database_url_from_app_dotenv_is_honoured`. |
+   | `DATABASE_URL` | Optional | Defaults to a local SQLite file (`astronomy.db`) if unset; nothing to configure for local dev. Point this at a Postgres connection string (e.g. from [Neon](https://neon.tech/)) for production. Setting it in `app/.env` alone is [honoured](#g-what-does-honoured-here-means). **Paste Neon's connection string in unmodified; DO NOT** manually add `+asyncpg` or strip `sslmode=require` yourself. `app/database.py` detects a plain `postgresql://`/`postgres://` URL, rewrites it to `postgresql+asyncpg://` internally, drops the query string, and sets `ssl=require` as a connect argument instead (since `asyncpg` doesn't accept a `sslmode` query parameter the way `psycopg2` does). If you pre-convert the URL yourself, that detection is skipped and the raw `sslmode=require` gets passed straight to `asyncpg`, which will reject it with a `TypeError`. |
    | `SESSION_SECRET_KEY` | Recommended | Signs login session cookies. Without it, the app runs fine but generates a random key per process, so everyone gets logged out on every restart. Generate one with `python -c "import secrets; print(secrets.token_hex(32))"`. This one *does* work via `.env` today. |
-   | `USER_SECRET_ENCRYPTION_KEY` | Recommended if you'll use personal Gemini keys | Encrypts personal Gemini API keys at rest (see III.A). Without it, the app runs fine, but any saved personal keys become unreadable after a restart (a random key is generated per process, with a warning logged). Must be a valid Fernet key: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. As with `DATABASE_URL` above, a `.env`-only value is honoured, since `load_environment()` runs before this variable is read. **If you already have a production database from before this feature existed**, note that this project has no migration tool (schema is created via `Base.metadata.create_all`, which only adds *new* tables, not new columns to existing ones) — you'll need to manually run `ALTER TABLE users ADD COLUMN gemini_api_key_encrypted TEXT; ALTER TABLE users ADD COLUMN gemini_preferred_model VARCHAR;` (or the SQLite equivalent) against your existing `users` table before `/account/settings` will work. |
+   | `USER_SECRET_ENCRYPTION_KEY` | Recommended if you will use personal Gemini keys | Encrypts personal Gemini API keys at rest (see III.A). Without it, the app runs fine, but any saved personal keys become unreadable after a restart (a random key is generated per process, with a warning logged). Must be a valid Fernet key: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. As with `DATABASE_URL` above, a `.env`-only value is [honoured](#g-what-does-honoured-here-means), since `load_environment()` runs before this variable is read. **If you already have a production database from before this feature existed**—note that this project has no migration tool (schema is created via `Base.metadata.create_all`, which only adds *new* tables, not new columns to existing ones)—you **MUST** manually run `ALTER TABLE users ADD COLUMN gemini_api_key_encrypted TEXT; ALTER TABLE users ADD COLUMN gemini_preferred_model VARCHAR;` (or the SQLite equivalent) against your existing `users` table before `/account/settings` will work. |
    | `FORCE_HTTPS_COOKIES` | Recommended for any deployment reachable over HTTPS | Set to `true`/`1`/`yes` to mark the session cookie `Secure` (Starlette's `SessionMiddleware` otherwise defaults to sending it over plain HTTP too). Leave unset for local `http://localhost` development. |
 
 3. **Reset the database schema** (safe on a fresh clone; this just creates tables, there's nothing to lose yet):
@@ -126,15 +126,16 @@ Programmatic access to steps 1–7 (without the templated HTML) is available via
 
 | Search | Expected state | Why |
 | --- | --- | --- |
+| `"The Eternal Land, Amphoreus"` | UNRESOLVED | Not a real star in our world |
 | `"51 Peg"` | RESOLVED | Famous exoplanet host, well-catalogued |
-| `"51 Pegasi"` | RESOLVED | Same star, different name — should resolve to same planet |
-| `"HD 217014"` | RESOLVED | Catalog ID for the same star — should match via alias lookup |
+| `"51 Pegasi"` | RESOLVED | Same star, different name; should resolve to same planet |
+| `"HD 217014"` | RESOLVED | Catalog ID for the same star; should match via alias lookup |
 | `"Betelgeuse"` | PARTIAL | Real, famous star, but no catalogued planets |
 | `"Proxima Centauri"` | RESOLVED | Closest star to the Sun, has confirmed exoplanet(s) |
 | `"The Sun"` or `"Sol"` | UNRESOLVED | (Probably — SIMBAD might not index "Sol" as an alternate name) |
 | `"Beta Cen"` | AMBIGUOUS | (Possibly — if SIMBAD lists both the primary and companion) |
 | `"asdfjkl"` | UNRESOLVED | Gibberish |
-| `"HD 217014"` (SIMBAD unreachable — network timeout, firewalled host, etc.) | LOOKUP_FAILED | SIMBAD was never actually reached, so this is not a real "no match" |
+| `"HD 217014"` (SIMBAD unreachable because of network timeout, firewalled host, etc.) | LOOKUP_FAILED | SIMBAD was never actually reached, so this is not a real "no match" |
 
 ---
 
@@ -342,8 +343,6 @@ A lightweight secondary index mapping every (normalized) query string that has e
 
 </details>
 
----
-
 ## **VII. FAQ**
 
 ### **A. "What does 'resolve' mean?"**
@@ -472,16 +471,19 @@ No, this is expected, and it's the point of `user_summary_snapshots`.
 
 There is exactly one canonical AI summary per object (`objects.ai_summary`), shown to every anonymous visitor and to any logged-in user who hasn't generated their own. If you're logged in and you personally clicked Generate or Regenerate, `/account/saved` shows *your* copy from that moment, even if someone else regenerates the shared version afterward.
 
-This is an ownership/no-clobber guarantee, not the AI narrative varying its actual content by user. If you and another user both generate at the same point in time, from the same underlying data, you'll get the same text.
+This is an ownership guarantee, not the AI narrative varying its actual content by user. If you and another user both generate at the same point in time, from the same underlying data, you'll get the same text.
+
+</details>
 
 ### **D. "Why two separate limits (a 5-minute cooldown AND a 20/hour rate limit) instead of just one?"**
 
+<details>
 <summary><b>View Limits Explanation (Click to expand)</b></summary>
 
 They stop different failure modes:
 
-- The **cooldown** is per-*object* — it stops rapid double-clicking Regenerate on the same star. It does nothing to stop someone clicking Generate on twenty different stars in a row.
-- The **rate limit** is per-*client* (logged-in user, or anonymous session) — it stops exactly that: one visitor spending Gemini quota across many different objects in a short window, which the cooldown alone can't see, since it only ever looks at one object at a time.
+- The **cooldown** is per-*object*; it stops rapid double-clicking Regenerate on the same star. It does nothing to stop someone clicking Generate on twenty different stars in a row.
+- The **rate limit** is per-*client* (logged-in user, or anonymous session); it stops exactly that: one visitor spending Gemini quota across many different objects in a short window, which the cooldown alone can't see, since it only ever looks at one object at a time.
 
 Both checks run on every Generate/Regenerate request; either can reject it independently.
 
@@ -491,26 +493,40 @@ Both checks run on every Generate/Regenerate request; either can reject it indep
 
 `/history` is a site-wide feed of recently resolved objects, not a personal activity log. The app already has a private per-user list at `/account/saved`, so keeping `/history` global makes it a shared discovery page instead of duplicating the same concept twice.
 
-### **F. "Why do anonymous favorite/unfavorite actions send me to login?"**
-
-Favorites are tied to a user account. If you are not logged in, the app redirects you to `/login` and then brings you back to the object page after authentication so the action can be completed on the right account.
-
-### **G. "How is CSRF protection implemented?"**
+### **F. "How is CSRF protection implemented?"**
 
 <details>
 <summary><b>View CSRF Protection Implementation Explanation (Click to expand)</b></summary>
 
-Every mutating route (`/register`, `/login`, `/logout`, favorite/unfavorite, and AI-summary regeneration) requires a CSRF token that must match the one minted for the visitor's own session. Form-based routes carry it as a hidden `csrf_token` field; the one JS-driven route (regenerate-summary, a `fetch()` POST with no form body) sends it as an `X-CSRF-Token` header instead, read from a `<meta name="csrf-token">` tag rendered into every page. The token itself lives in the same signed, `itsdangerous`-backed session cookie the app already uses for login state, so it can't be forged or read cross-origin -- see `app.auth.get_csrf_token`/`verify_csrf_token`.
+Every mutating route (`/register`, `/login`, `/logout`, favorite/unfavorite, and AI-summary regeneration) requires a CSRF token that must match the one minted for the visitor's own session. Form-based routes carry it as a hidden `csrf_token` field; the one JS-driven route (regenerate-summary, a `fetch()` POST with no form body) sends it as an `X-CSRF-Token` header instead, read from a `<meta name="csrf-token">` tag rendered into every page. The token itself lives in the same signed, `itsdangerous`-backed session cookie the app already uses for login state, so it can't be forged or read cross-origin; see `app.auth.get_csrf_token`/`verify_csrf_token`.
 
-There is no minimum password complexity requirement beyond an 8-character floor (`app.auth._MIN_PASSWORD_LENGTH`) -- reasonable for a portfolio project, but worth knowing if you're reusing this auth code elsewhere.
+There is no minimum password complexity requirement beyond an 8-character floor (`app.auth._MIN_PASSWORD_LENGTH`).
 
 </details>
 
-### **H. "How do I query the resolver programmatically?"**
+### **G. "What does 'honoured' here means?"**
 
-Use `GET /api/resolve?q=...`. It returns the same resolution data as the HTML flow, but as JSON for scripts or other tools.
+<details>
+<summary><b>View Honoured Explanation (Click to expand)</b></summary>
 
----
+**Honoured** here simply means **the value actually gets used**, rather than silently ignored.
+
+Python only reads `.env` files if something explicitly loads them (usually via `python-dotenv`'s `load_dotenv()`); it doesn't happen automatically.
+
+At the top of `app/database.py`:
+
+```python
+from app.config import load_environment
+from app.models import Base
+
+load_environment()   # <-- .env files loaded HERE, first
+
+_raw_database_url = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./astronomy.db")  # <-- read SECOND
+```
+
+`load_environment()` (defined in `app/config.py`) calls `load_dotenv()` for both the repo-root `.env` and `app/.env`, and it's called *before* the `os.getenv("DATABASE_URL", ...)` line. Thus, by the time `os.getenv()` runs, whatever you put in `app/.env` is already sitting in the process environment—it gets picked up correctly.
+
+</details>
 
 ## **VIII. Third-Party Data, Services & Legal Notes**
 
