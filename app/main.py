@@ -83,7 +83,13 @@ if not _session_secret_key:
         "process only. Sessions will not survive a restart. Set SESSION_SECRET_KEY "
         "explicitly before deploying anywhere beyond local single-process dev."
     )
-app.add_middleware(SessionMiddleware, secret_key=_session_secret_key)
+_force_https_cookies = os.getenv("FORCE_HTTPS_COOKIES", "").strip().lower() in ("1", "true", "yes")
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=_session_secret_key,
+    https_only=_force_https_cookies,
+    same_site="lax",
+)
 
 # Serve static assets.
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -311,7 +317,14 @@ async def api_resolve(
         return response
     await record_usage(subject_type, subject_id)
 
-    result = await get_or_resolve(q)
+    # Never generate an AI summary inline here: it's a second, independent
+    # Gemini call site that doesn't go through the AI-summary rate limiter or
+    # forward a personal API key, and (until store_result()'s belt-and-suspenders
+    # try/except) a Gemini failure would crash this route and roll back an
+    # otherwise-successful catalog resolution. Match /search's existing pattern:
+    # clients that want a summary can fetch one via the rate-limited
+    # /object/{id}/summary route.
+    result = await get_or_resolve(q, generate_ai_summary=False)
     return JSONResponse(result.to_dict())
 
 

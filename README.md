@@ -86,6 +86,7 @@ No feature requiring scientific correctness is behind a login wall — search, c
    | `DATABASE_URL` | Optional | Defaults to a local SQLite file (`astronomy.db`) if unset — nothing to configure for local dev. Point this at a Postgres connection string (e.g. from [Neon](https://neon.tech/)) for production. Setting it in `app/.env` alone is honoured — `load_environment()` runs before this variable is read — see `tests/test_config_load_order.py::test_database_url_from_app_dotenv_is_honoured`. |
    | `SESSION_SECRET_KEY` | Recommended | Signs login session cookies. Without it, the app runs fine but generates a random key per process, so everyone gets logged out on every restart. Generate one with `python -c "import secrets; print(secrets.token_hex(32))"`. This one *does* work via `.env` today. |
    | `USER_SECRET_ENCRYPTION_KEY` | Recommended if you'll use personal Gemini keys | Encrypts personal Gemini API keys at rest (see III.A). Without it, the app runs fine, but any saved personal keys become unreadable after a restart (a random key is generated per process, with a warning logged). Must be a valid Fernet key: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. As with `DATABASE_URL` above, a `.env`-only value is honoured, since `load_environment()` runs before this variable is read. **If you already have a production database from before this feature existed**, note that this project has no migration tool (schema is created via `Base.metadata.create_all`, which only adds *new* tables, not new columns to existing ones) — you'll need to manually run `ALTER TABLE users ADD COLUMN gemini_api_key_encrypted TEXT; ALTER TABLE users ADD COLUMN gemini_preferred_model VARCHAR;` (or the SQLite equivalent) against your existing `users` table before `/account/settings` will work. |
+   | `FORCE_HTTPS_COOKIES` | Recommended for any deployment reachable over HTTPS | Set to `true`/`1`/`yes` to mark the session cookie `Secure` (Starlette's `SessionMiddleware` otherwise defaults to sending it over plain HTTP too). Leave unset for local `http://localhost` development. |
 
 3. **Reset the database schema** (safe on a fresh clone; this just creates tables, there's nothing to lose yet):
 
@@ -153,8 +154,8 @@ This is the core table of the application. It caches the primary astronomical da
 | **id** | INTEGER | No | PRIMARY KEY |
 | **simbad_main_id** | VARCHAR | Yes | UNIQUE |
 | **query_text** | VARCHAR | No | |
-| **ra_deg** | FLOAT | Yes | Right Ascension (degrees) |
-| **dec_deg** | FLOAT | Yes | Declination (degrees) |
+| **ra_deg** | FLOAT | Yes | Right Ascension (degrees, ICRS, epoch J2000) |
+| **dec_deg** | FLOAT | Yes | Declination (degrees, ICRS, epoch J2000) |
 | **otype** | VARCHAR | Yes | Object Type |
 | **spectral_type** | VARCHAR | Yes | |
 | **resolution_state** | VARCHAR | No | CHECK (`RESOLVED`, `AMBIGUOUS`, `PARTIAL`, `UNRESOLVED`, `LOOKUP_FAILED`) |
@@ -171,8 +172,8 @@ This is the core table of the application. It caches the primary astronomical da
 - **`id`**: Unique internal auto-incrementing identifier for each master object record.
 - **`simbad_main_id`**: The canonical, standard primary identifier returned by the SIMBAD database. Enforces a `UNIQUE` constraint so we never duplicate the same real-world celestial object in our cache.
 - **`query_text`**: The exact, raw (normalized) string this row was most recently resolved from. Repeat searches of the *same* string hit this column directly; a *different* alias for an already-cached object (e.g. searching "51 Pegasi" after "51 Peg") is instead served via the `query_aliases` table (see below) rather than triggering its own live SIMBAD round trip.
-- **`ra_deg`**: Right Ascension converted to decimal degrees. Represents the celestial equivalent of longitude. Nullable if the object cannot be resolved or lacks spatial coordinates.
-- **`dec_deg`**: Declination converted to decimal degrees. Represents the celestial equivalent of latitude.
+- **`ra_deg`**: Right Ascension converted to decimal degrees. Represents the celestial equivalent of longitude. Nullable if the object cannot be resolved or lacks spatial coordinates. As returned by SIMBAD's `basic.ra`, this is in the ICRS reference frame (effectively J2000-equivalent for this application's purposes); no epoch propagation is performed.
+- **`dec_deg`**: Declination converted to decimal degrees. Represents the celestial equivalent of latitude. Same frame/epoch note as `ra_deg` above.
 - **`otype`**: The astronomical object classification returned by SIMBAD (e.g., Star, High proper-motion Star, White Dwarf).
 - **`spectral_type`**: The spectral classification of the star (e.g., `G5V`), indicating its temperature, luminosity, and evolutionary stage.
 - **`resolution_state`**: The core state engine value of the application. Restricted by a `CHECK` constraint to exactly five mutually exclusive states: `RESOLVED`, `AMBIGUOUS`, `PARTIAL`, `UNRESOLVED`, or `LOOKUP_FAILED`.

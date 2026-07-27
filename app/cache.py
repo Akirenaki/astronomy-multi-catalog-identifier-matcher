@@ -6,7 +6,7 @@ import logging
 import time
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
@@ -19,13 +19,26 @@ from app.models import (
     SavedSearch,
     UserSummarySnapshot,
 )
-from app.narrative import generate_summary
+from app.narrative import GeminiGenerationError, generate_summary
 from app.resolver import ResolutionResult, resolve_query
 from app.catalogs.simbad import normalize_query
 
 logger = logging.getLogger(__name__)
 
 AI_SUMMARY_COOLDOWN = timedelta(minutes=5)
+
+# Ordering used to decide whether a fresh resolution is actually an improvement
+# over what's already cached for an existing row, or a regression (e.g. a
+# transient upstream failure on a routine TTL-refresh). Higher is better.
+# See store_result(): a strictly-lower-quality new result must never overwrite
+# a strictly-higher-quality existing one.
+_STATE_QUALITY = {
+    "RESOLVED": 4,
+    "PARTIAL": 3,
+    "AMBIGUOUS": 2,
+    "UNRESOLVED": 1,
+    "LOOKUP_FAILED": 0,
+}
 
 
 class CooldownActiveError(Exception):
@@ -39,14 +52,18 @@ class CooldownActiveError(Exception):
 async def get_cached(query_text: str) -> ObjectRecord | None:
     """Return a fresh cached object for a query."""
     normalized_query = normalize_query(query_text)
-    key = normalized_query or query_text
+    # Casefold only for the cache-key lookup, not for normalize_query()'s
+    # actual output or what's sent to SIMBAD -- this just avoids fragmenting
+    # the cache across differently-cased spellings of the same informal name
+    # (e.g. "Betelgeuse" vs "betelgeuse"); see TICKET-07.
+    key = (normalized_query or query_text).casefold()
     async with SessionLocal() as session:
         eager_opts = (selectinload(ObjectRecord.identifiers), selectinload(ObjectRecord.planets))
 
         result = await session.execute(
             select(ObjectRecord)
             .options(*eager_opts)
-            .where(ObjectRecord.query_text == key, ObjectRecord.expires_at > datetime.now(timezone.utc))
+            .where(func.lower(ObjectRecord.query_text) == key, ObjectRecord.expires_at > datetime.now(timezone.utc))
         )
         hit = result.scalar_one_or_none()
         if hit is not None:
@@ -56,7 +73,7 @@ async def get_cached(query_text: str) -> ObjectRecord | None:
             select(ObjectRecord)
             .join(QueryAlias, QueryAlias.object_id == ObjectRecord.id)
             .options(*eager_opts)
-            .where(QueryAlias.query_text == key, ObjectRecord.expires_at > datetime.now(timezone.utc))
+            .where(func.lower(QueryAlias.query_text) == key, ObjectRecord.expires_at > datetime.now(timezone.utc))
         )
         return alias_result.scalar_one_or_none()
 
@@ -185,6 +202,7 @@ async def store_result(resolution_result: ResolutionResult, *, generate_ai_summa
             expires_at=datetime.now(timezone.utc) + timedelta(days=14),
         )
 
+        is_downgrade = False
         if primary_row is not None:
             record = primary_row
             previous_state = record.resolution_state
@@ -197,21 +215,46 @@ async def store_result(resolution_result: ResolutionResult, *, generate_ai_summa
                 select(PlanetRecord.pl_name).where(PlanetRecord.object_id == record.id)
             )
             previous_planet_names = set(previous_planets_result.scalars().all())
-            for field_name, value in fresh_fields.items():
-                setattr(record, field_name, value)
-            # Keep an existing summary when updating the row, UNLESS the new
-            # resolution's state or planet list differs from what was
-            # previously stored -- in that case the existing ai_summary would
-            # describe stale data, so clear it and let the UI fall back to
-            # "Generate AI summary".
-            new_planet_names = {p.get("pl_name", "") for p in resolution_result.planets}
-            if record.ai_summary is not None and (
-                previous_state != resolution_result.state or previous_planet_names != new_planet_names
-            ):
-                record.ai_summary = None
-                record.ai_summary_generated_at = None
-            await session.execute(delete(IdentifierRecord).where(IdentifierRecord.object_id == record.id))
-            await session.execute(delete(PlanetRecord).where(PlanetRecord.object_id == record.id))
+
+            # Guard against a cache refresh that produced a *worse* result than
+            # what's already stored -- most commonly a transient SIMBAD/Exoplanet
+            # Archive failure hitting a row whose 14-day TTL just lapsed. Without
+            # this check, a routine re-resolution failure would silently destroy
+            # a previously-good, fully-resolved object (see TICKET-02 / P0-2).
+            is_downgrade = _STATE_QUALITY[resolution_result.state] < _STATE_QUALITY[previous_state]
+
+            if is_downgrade:
+                # Leave simbad_main_id/ra_deg/dec_deg/otype/spectral_type/
+                # resolution_state, the existing identifier/planet rows, and
+                # ai_summary/ai_summary_generated_at untouched -- the new,
+                # lower-quality result isn't allowed to overwrite them. Only
+                # expires_at is refreshed below (using the short TTL for the
+                # new attempt's failed/worse state), so a retry is still
+                # scheduled soon.
+                logger.warning(
+                    "store_result(): new state %r is worse than existing state %r for "
+                    "query_text=%r (id=%s); preserving existing data instead of overwriting.",
+                    resolution_result.state,
+                    previous_state,
+                    resolution_result.query_text,
+                    record.id,
+                )
+            else:
+                for field_name, value in fresh_fields.items():
+                    setattr(record, field_name, value)
+                # Keep an existing summary when updating the row, UNLESS the new
+                # resolution's state or planet list differs from what was
+                # previously stored -- in that case the existing ai_summary would
+                # describe stale data, so clear it and let the UI fall back to
+                # "Generate AI summary".
+                new_planet_names = {p.get("pl_name", "") for p in resolution_result.planets}
+                if record.ai_summary is not None and (
+                    previous_state != resolution_result.state or previous_planet_names != new_planet_names
+                ):
+                    record.ai_summary = None
+                    record.ai_summary_generated_at = None
+                await session.execute(delete(IdentifierRecord).where(IdentifierRecord.object_id == record.id))
+                await session.execute(delete(PlanetRecord).where(PlanetRecord.object_id == record.id))
         else:
             record = ObjectRecord(**fresh_fields)
             session.add(record)
@@ -223,34 +266,43 @@ async def store_result(resolution_result: ResolutionResult, *, generate_ai_summa
         ):
             record.expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
 
-        # Store aliases as identifier rows.
-        for alias in resolution_result.aliases:
-            session.add(
-                IdentifierRecord(
-                    object_id=record.id,
-                    catalog="SIMBAD",
-                    identifier=alias,
-                    matched_exoplanet_archive=alias == resolution_result.matched_alias,
+        # Store aliases as identifier rows. Skipped on a downgrade: the
+        # existing IdentifierRecord rows were deliberately left in place above,
+        # so inserting the (typically empty, but not always -- see the
+        # PARTIAL+planets_lookup_failed case) new alias list here would just
+        # create duplicates alongside the preserved data.
+        if not is_downgrade:
+            for alias in resolution_result.aliases:
+                session.add(
+                    IdentifierRecord(
+                        object_id=record.id,
+                        catalog="SIMBAD",
+                        identifier=alias,
+                        matched_exoplanet_archive=alias == resolution_result.matched_alias,
+                    )
                 )
-            )
 
-        # Store planets when found.
-        for planet in resolution_result.planets:
-            session.add(
-                PlanetRecord(
-                    object_id=record.id,
-                    pl_name=planet.get("pl_name", ""),
-                    pl_letter=planet.get("pl_letter"),
-                    orbital_period_days=planet.get("orbital_period_days"),
-                    planet_radius_earth=planet.get("planet_radius_earth"),
-                    discovery_year=planet.get("discovery_year"),
-                    discovery_method=planet.get("discovery_method"),
+            # Store planets when found.
+            for planet in resolution_result.planets:
+                session.add(
+                    PlanetRecord(
+                        object_id=record.id,
+                        pl_name=planet.get("pl_name", ""),
+                        pl_letter=planet.get("pl_letter"),
+                        orbital_period_days=planet.get("orbital_period_days"),
+                        planet_radius_earth=planet.get("planet_radius_earth"),
+                        discovery_year=planet.get("discovery_year"),
+                        discovery_method=planet.get("discovery_method"),
+                    )
                 )
-            )
 
-        # Skip AI summaries for incomplete or failed lookups.
+        # Skip AI summaries for incomplete or failed lookups, and for a
+        # downgrade (the new resolution_result's fields are the ones that
+        # were just discarded above, so generating a summary from them would
+        # describe data that isn't actually being stored).
         if (
-            generate_ai_summary
+            not is_downgrade
+            and generate_ai_summary
             and record.ai_summary is None
             and resolution_result.state not in ("UNRESOLVED", "AMBIGUOUS", "LOOKUP_FAILED")
         ):
@@ -260,7 +312,17 @@ async def store_result(resolution_result: ResolutionResult, *, generate_ai_summa
                 "planet_count": len(resolution_result.planets),
                 "planets": resolution_result.planets,
             }
-            record.ai_summary = await generate_summary(summary_payload)
+            try:
+                record.ai_summary = await generate_summary(summary_payload)
+            except GeminiGenerationError:
+                # Defense in depth: any future caller of store_result(...,
+                # generate_ai_summary=True) shouldn't have a Gemini hiccup
+                # crash the whole request and roll back an otherwise-successful
+                # catalog resolution. Leave ai_summary unset; the UI/API can
+                # request one later via the rate-limited summary routes.
+                logger.exception(
+                    "Inline AI summary generation failed during store_result(); leaving ai_summary unset."
+                )
 
         # Record the current and historical query strings for cache lookups.
         alias_query_texts = old_query_texts | {resolution_result.query_text}

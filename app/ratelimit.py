@@ -11,6 +11,25 @@ from app.models import RateLimitEvent
 AI_SUMMARY_RATE_LIMIT = 20
 AI_SUMMARY_RATE_LIMIT_WINDOW = timedelta(hours=1)
 
+# KNOWN LIMITATION (TICKET-04 / Finding P2-2): check_limit() and record_usage()
+# are separate transactions, with the actual Gemini call happening in between
+# at each route's call site. Two concurrent requests from the same subject can
+# both pass check_limit() before either calls record_usage(), letting a tight
+# burst exceed the configured cap by however many requests race in the same
+# window. check_and_record() below doesn't close this either -- it's the same
+# two calls back-to-back, not a single atomic transaction.
+#
+# This is accepted as a soft cost-control limitation, not a security boundary:
+# AI_SUMMARY_RATE_LIMIT bounds *steady-state* spend regardless of how much a
+# single race window can overshoot it in the worst case, and the routes that
+# use this limiter are gated behind login/session identity, not open to
+# anonymous drive-by abuse at scale. If Gemini spend from this race becomes a
+# real problem, the fix is to make record_usage() insert first and have the
+# caller re-check the count including its own just-inserted row (narrowing the
+# race window to the count query rather than the count query + a full Gemini
+# round trip + a separate insert), or to serialize check+insert behind a
+# `SELECT ... FOR UPDATE`-equivalent lock.
+
 
 class RateLimitExceededError(Exception):
     """Raised when a subject has exceeded the allowed request count."""

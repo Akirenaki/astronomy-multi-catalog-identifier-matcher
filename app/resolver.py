@@ -114,7 +114,11 @@ async def resolve_query(query_text: str) -> ResolutionResult:
             aliases=aliases,
             planets=planets,
             matched_alias=matched_alias,
-            resolved_via=[normalized_query or query_text, simbad_result.get("main_id") or "", matched_alias or ""],
+            resolved_via=[
+                step
+                for step in (normalized_query or query_text, simbad_result.get("main_id"), matched_alias)
+                if step
+            ],
         )
 
     return ResolutionResult(
@@ -128,6 +132,6 @@ async def resolve_query(query_text: str) -> ResolutionResult:
         aliases=aliases,
         planets=planets,
         matched_alias=matched_alias,
-        resolved_via=[normalized_query or query_text, simbad_result.get("main_id") or ""],
+        resolved_via=[step for step in (normalized_query or query_text, simbad_result.get("main_id")) if step],
         planets_lookup_failed=planets_lookup_failed,
     )
