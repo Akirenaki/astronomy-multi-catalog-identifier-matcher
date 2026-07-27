@@ -150,6 +150,12 @@ class User(Base):
     email: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    # Personal Gemini API key fallback (see README section III.A). Stored as
+    # Fernet ciphertext, never as plaintext -- see app/crypto_utils.py. Never
+    # decrypted for display; the settings UI only ever shows whether a key is
+    # currently saved, not the key itself.
+    gemini_api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    gemini_preferred_model: Mapped[str | None] = mapped_column(String, nullable=True)
 
     saved_searches: Mapped[List["SavedSearch"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"

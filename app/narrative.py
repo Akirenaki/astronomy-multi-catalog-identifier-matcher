@@ -168,24 +168,38 @@ def load_environment() -> None:
 load_environment()
 
 
-async def generate_summary(payload: dict[str, Any]) -> str:
-    """Generate a plain-English summary of an astronomical object."""
-    if not client or types is None:
-        logger.warning(
-            "GEMINI_API_KEY is not set; skipping narrative generation. "
-            "Returning default 'No summary available.' message."
-        )
-        return "No summary available."
+DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
 
+
+def _build_personal_client(api_key: str) -> Any | None:
+    """Build a one-off Gemini client from a user's personal API key.
+
+    Used only as a fallback when the shared app key is rate-limited/quota-
+    exhausted (see generate_summary() and README section III.A). Never
+    cached/reused across requests -- a fresh client is built per fallback
+    attempt from the (decrypted, in-memory only) key.
+    """
+    if genai is None:
+        return None
+    try:
+        return genai.Client(api_key=api_key)
+    except Exception as e:
+        logger.error("Failed to initialize a personal Gemini client: %s", e)
+        return None
+
+
+async def _call_gemini(client_obj: Any, prompt: str, *, model: str) -> str:
+    """Issue one generate_content call and translate failures into the typed
+    GeminiGenerationError/GeminiRateLimitedError exceptions."""
     try:
         config = types.GenerateContentConfig(
             thinking_config=types.ThinkingConfig(
                 thinking_level=types.ThinkingLevel.LOW,
             )
         )
-        response = await client.aio.models.generate_content(
-            model="gemini-3.6-flash",
-            contents=_build_summary_prompt(payload),
+        response = await client_obj.aio.models.generate_content(
+            model=model,
+            contents=prompt,
             config=config,
         )
         return response.text or "No summary available."
@@ -213,3 +227,45 @@ async def generate_summary(payload: dict[str, Any]) -> str:
             "The AI summary could not be generated due to an unexpected error. "
             "Please try again in a moment.",
         ) from e
+
+
+async def generate_summary(
+    payload: dict[str, Any],
+    *,
+    personal_api_key: str | None = None,
+    personal_model: str | None = None,
+) -> str:
+    """Generate a plain-English summary of an astronomical object.
+
+    Always tries the app's own shared Gemini key first. If that specifically
+    comes back rate-limited/quota-exhausted (GeminiRateLimitedError) and the
+    caller has a personal_api_key configured, retries once against that key
+    -- see README section III.A for the fallback semantics (shared key first,
+    personal key only as a last resort; the resulting summary is still
+    written to the one shared ai_summary column, benefiting every future
+    visitor, not just the requesting user).
+    """
+    if not client or types is None:
+        logger.warning(
+            "GEMINI_API_KEY is not set; skipping narrative generation. "
+            "Returning default 'No summary available.' message."
+        )
+        return "No summary available."
+
+    prompt = _build_summary_prompt(payload)
+
+    try:
+        return await _call_gemini(client, prompt, model=DEFAULT_GEMINI_MODEL)
+    except GeminiRateLimitedError:
+        if not personal_api_key:
+            raise
+
+        personal_client = _build_personal_client(personal_api_key)
+        if personal_client is None:
+            # Couldn't even construct a client from the stored key -- surface
+            # the original shared-key rate-limit error rather than a new,
+            # more confusing one.
+            raise
+
+        logger.info("Shared Gemini key rate-limited; retrying with the requesting user's personal key.")
+        return await _call_gemini(personal_client, prompt, model=personal_model or DEFAULT_GEMINI_MODEL)

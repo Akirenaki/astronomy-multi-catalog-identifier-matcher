@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Settings &middot; Cross-Matcher{% endblock %}
+{% block page_modifier %} page--narrow{% endblock %}
+{% block content %}
+  <div class="card">
+    <h1>Personal Gemini API key</h1>
+
+    <p class="text-sm text-secondary">
+      This is a <strong>fallback only</strong>. Every AI summary request still tries the
+      app's own shared Gemini key first &mdash; your key is used only if that specifically
+      comes back rate-limited or over quota. Because AI summaries are shared between all
+      visitors for a given object, generating one with your key unblocks it for everyone
+      who looks up that object next, not just you.
+    </p>
+    <p class="text-sm text-secondary">
+      Your key is encrypted before storage and is never shown back to you or anyone else
+      once saved &mdash; this page only shows whether a key is currently on file.
+    </p>
+
+    {% if message %}<p class="success-text">{{ message }}</p>{% endif %}
+    {% if error %}<p class="error-text">{{ error }}</p>{% endif %}
+
+    <p class="text-sm mt-4 mb-0">
+      Status:
+      {% if has_personal_key %}
+        <strong>A personal key is currently saved.</strong>
+      {% else %}
+        <strong>No personal key saved.</strong>
+      {% endif %}
+    </p>
+
+    <form action="/account/settings" method="post" class="mt-4">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <div class="field">
+        <label for="api_key">{{ 'Replace saved key' if has_personal_key else 'Gemini API key' }}</label>
+        <input
+          type="password"
+          id="api_key"
+          name="api_key"
+          autocomplete="off"
+          placeholder="{{ 'Leave blank to keep your current key' if has_personal_key else 'AIza...' }}"
+        >
+      </div>
+      <div class="field">
+        <label for="preferred_model">Preferred model <span class="text-tertiary">(optional)</span></label>
+        <input
+          type="text"
+          id="preferred_model"
+          name="preferred_model"
+          value="{{ preferred_model }}"
+          placeholder="Defaults to the app's own model if left blank"
+        >
+        <p class="field__hint">Only used if a personal key is saved.</p>
+      </div>
+      <button type="submit" class="btn btn--primary">Save</button>
+    </form>
+
+    {% if has_personal_key %}
+      <form action="/account/settings" method="post" class="mt-4">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <input type="hidden" name="clear_key" value="on">
+        <button type="submit" class="link-button">Remove saved key</button>
+      </form>
+    {% endif %}
+  </div>
+{% endblock %}

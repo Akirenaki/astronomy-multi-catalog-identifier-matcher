@@ -21,9 +21,12 @@ from app.auth import (
     create_user,
     get_csrf_token,
     get_current_user,
+    get_personal_gemini_key,
     get_session_id,
+    get_user_by_id,
     log_in_session,
     log_out_session,
+    update_personal_gemini_settings,
     verify_csrf_token,
 )
 from app.cache import (
@@ -209,7 +212,12 @@ async def object_summary(
         return response
 
     try:
-        summary = await ensure_ai_summary(simbad_main_id)
+        personal_api_key = personal_model = None
+        if current_user is not None:
+            personal_api_key, personal_model = await get_personal_gemini_key(current_user.id)
+        summary = await ensure_ai_summary(
+            simbad_main_id, personal_api_key=personal_api_key, personal_model=personal_model
+        )
     except LookupError:
         return JSONResponse({"error": "Object not found"}, status_code=404)
     except GeminiGenerationError as exc:
@@ -245,7 +253,12 @@ async def object_summary_regenerate(
         return response
 
     try:
-        summary = await regenerate_ai_summary(simbad_main_id)
+        personal_api_key = personal_model = None
+        if current_user is not None:
+            personal_api_key, personal_model = await get_personal_gemini_key(current_user.id)
+        summary = await regenerate_ai_summary(
+            simbad_main_id, personal_api_key=personal_api_key, personal_model=personal_model
+        )
     except LookupError:
         return JSONResponse({"error": "Object not found"}, status_code=404)
     except CooldownActiveError as exc:
@@ -427,3 +440,67 @@ async def account_saved(
     template = env.get_template("account_saved.html")
     html = template.render(request=request, current_user=current_user, favorites=favorites)
     return HTMLResponse(content=html)
+
+
+def _render_account_settings(
+    request: Request, current_user: User, *, message: str | None = None, error: str | None = None
+) -> HTMLResponse:
+    template = env.get_template("account_settings.html")
+    html = template.render(
+        request=request,
+        current_user=current_user,
+        has_personal_key=current_user.gemini_api_key_encrypted is not None,
+        preferred_model=current_user.gemini_preferred_model or "",
+        message=message,
+        error=error,
+    )
+    return HTMLResponse(content=html, status_code=400 if error else 200)
+
+
+@app.get("/account/settings", response_class=HTMLResponse, response_model=None)
+async def account_settings_form(
+    request: Request, current_user: User | None = Depends(get_current_user)
+) -> HTMLResponse | RedirectResponse:
+    """Show the personal Gemini API key settings form."""
+    if current_user is None:
+        return RedirectResponse(url="/login?next=/account/settings", status_code=303)
+    return _render_account_settings(request, current_user)
+
+
+@app.post(
+    "/account/settings",
+    response_class=HTMLResponse,
+    response_model=None,
+    dependencies=[Depends(require_csrf_form)],
+)
+async def account_settings_submit(
+    request: Request,
+    current_user: User | None = Depends(get_current_user),
+    api_key: str = Form(""),
+    preferred_model: str = Form(""),
+    clear_key: str | None = Form(None),
+) -> HTMLResponse | RedirectResponse:
+    """Save, update, or clear the current user's personal Gemini API key."""
+    if current_user is None:
+        return RedirectResponse(url="/login?next=/account/settings", status_code=303)
+
+    api_key = api_key.strip()
+    preferred_model = preferred_model.strip()
+    clearing = bool(clear_key)
+
+    try:
+        await update_personal_gemini_settings(
+            current_user.id, api_key=api_key or None, preferred_model=preferred_model or None, clear=clearing
+        )
+    except ValueError as exc:
+        return _render_account_settings(request, current_user, error=str(exc))
+
+    if clearing:
+        message = "Personal API key removed."
+    elif api_key:
+        message = "Personal API key saved."
+    else:
+        message = "Preferred model updated."
+
+    refreshed_user = await get_user_by_id(current_user.id)
+    return _render_account_settings(request, refreshed_user, message=message)

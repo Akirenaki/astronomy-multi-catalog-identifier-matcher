@@ -309,7 +309,12 @@ async def get_or_resolve(query_text: str, *, generate_ai_summary: bool = True) -
     return await store_result(result, generate_ai_summary=generate_ai_summary)
 
 
-async def ensure_ai_summary(simbad_main_id: str) -> str:
+async def ensure_ai_summary(
+    simbad_main_id: str,
+    *,
+    personal_api_key: str | None = None,
+    personal_model: str | None = None,
+) -> str:
     """Generate and persist an AI narrative if missing."""
     async with SessionLocal() as session:
         result = await session.execute(
@@ -336,7 +341,9 @@ async def ensure_ai_summary(simbad_main_id: str) -> str:
             "planet_count": len(record.planets),
             "planets": [planet.to_dict() for planet in record.planets],
         }
-        summary = await generate_summary(summary_payload)
+        summary = await generate_summary(
+            summary_payload, personal_api_key=personal_api_key, personal_model=personal_model
+        )
 
         record.ai_summary = summary
         # Record when the summary was generated.
@@ -345,7 +352,12 @@ async def ensure_ai_summary(simbad_main_id: str) -> str:
         return summary
 
 
-async def regenerate_ai_summary(simbad_main_id: str) -> str:
+async def regenerate_ai_summary(
+    simbad_main_id: str,
+    *,
+    personal_api_key: str | None = None,
+    personal_model: str | None = None,
+) -> str:
     """Regenerate the AI narrative for a resolved object."""
     async with SessionLocal() as session:
         result = await session.execute(
@@ -378,7 +390,9 @@ async def regenerate_ai_summary(simbad_main_id: str) -> str:
             "planet_count": len(record.planets),
             "planets": [planet.to_dict() for planet in record.planets],
         }
-        summary = await generate_summary(summary_payload)
+        summary = await generate_summary(
+            summary_payload, personal_api_key=personal_api_key, personal_model=personal_model
+        )
 
         record.ai_summary = summary
         record.ai_summary_generated_at = datetime.now(timezone.utc)

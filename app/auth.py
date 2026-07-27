@@ -8,6 +8,7 @@ from fastapi import Request
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from app.crypto_utils import decrypt_secret, encrypt_secret
 from app.database import SessionLocal
 from app.models import User
 
@@ -137,3 +138,56 @@ def verify_csrf_token(request: Request, submitted_token: str | None) -> bool:
     if not expected or not submitted_token:
         return False
     return secrets.compare_digest(expected, submitted_token)
+
+
+_MAX_PERSONAL_API_KEY_LENGTH = 200
+
+
+async def update_personal_gemini_settings(
+    user_id: int,
+    *,
+    api_key: str | None,
+    preferred_model: str | None,
+    clear: bool = False,
+) -> None:
+    """Update a user's personal-Gemini-key fallback settings (see README III.A).
+
+    - `clear=True` removes both the stored key and the preferred model,
+      regardless of what else is passed.
+    - Otherwise, a non-empty `api_key` replaces the stored (encrypted) key.
+    - `preferred_model` is always applied when not clearing, independent of
+      whether `api_key` was resubmitted -- since the key is never decrypted
+      back for display, requiring the user to retype it just to change their
+      preferred model name would be poor UX. Pass `None`/empty to clear just
+      the preferred model while leaving an existing key in place.
+    """
+    if api_key and len(api_key) > _MAX_PERSONAL_API_KEY_LENGTH:
+        raise ValueError("That doesn't look like a valid API key (too long).")
+
+    async with SessionLocal() as session:
+        user = await session.get(User, user_id)
+        if user is None:
+            raise LookupError(f"No user with id={user_id!r}")
+
+        if clear:
+            user.gemini_api_key_encrypted = None
+            user.gemini_preferred_model = None
+        else:
+            if api_key:
+                user.gemini_api_key_encrypted = encrypt_secret(api_key)
+            user.gemini_preferred_model = preferred_model or None
+        await session.commit()
+
+
+async def get_personal_gemini_key(user_id: int) -> tuple[str | None, str | None]:
+    """Return (decrypted_api_key, preferred_model) for a user's personal Gemini
+    fallback, or (None, None) if no key is saved or it can't be decrypted
+    (e.g. USER_SECRET_ENCRYPTION_KEY changed since it was saved)."""
+    user = await get_user_by_id(user_id)
+    if user is None or not user.gemini_api_key_encrypted:
+        return None, None
+
+    decrypted = decrypt_secret(user.gemini_api_key_encrypted)
+    if decrypted is None:
+        return None, None
+    return decrypted, user.gemini_preferred_model

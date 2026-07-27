@@ -25,6 +25,7 @@
         <a href="/history" class="{{ 'is-active' if request.url.path == '/history' else '' }}">Recent</a>
         {% if current_user %}
           <a href="/account/saved" class="{{ 'is-active' if request.url.path == '/account/saved' else '' }}">Saved</a>
+          <a href="/account/settings" class="{{ 'is-active' if request.url.path == '/account/settings' else '' }}">Settings</a>
           <span class="site-nav__user">{{ current_user.email }}</span>
           <form action="/logout" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button type="submit" class="link-button">Log out</button></form>
         {% else %}

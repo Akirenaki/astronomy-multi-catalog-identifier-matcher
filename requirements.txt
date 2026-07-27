@@ -9,6 +9,7 @@ google-genai
 python-dotenv
 markdown-it-py
 bcrypt
+cryptography
 itsdangerous
 python-multipart
 pytest
