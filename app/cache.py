@@ -41,6 +41,29 @@ _STATE_QUALITY = {
 }
 
 
+def _is_downgrade(
+    new_state: str,
+    new_planets_lookup_failed: bool,
+    previous_state: str,
+    previous_planets_lookup_failed: bool,
+) -> bool:
+    """Whether a fresh resolution is worse than what's already stored.
+
+    Cross-state comparisons use _STATE_QUALITY. Same-state PARTIAL
+    comparisons additionally treat a confirmed "no planets" result
+    (planets_lookup_failed=False) as strictly better than an
+    unconfirmed one (planets_lookup_failed=True), since both share
+    the same _STATE_QUALITY score.
+    """
+    new_quality = _STATE_QUALITY[new_state]
+    previous_quality = _STATE_QUALITY[previous_state]
+    if new_quality != previous_quality:
+        return new_quality < previous_quality
+    if new_state == "PARTIAL":
+        return new_planets_lookup_failed and not previous_planets_lookup_failed
+    return False
+
+
 class CooldownActiveError(Exception):
     """Raised when a summary regeneration is attempted too soon."""
 
@@ -221,7 +244,12 @@ async def store_result(resolution_result: ResolutionResult, *, generate_ai_summa
             # Archive failure hitting a row whose 14-day TTL just lapsed. Without
             # this check, a routine re-resolution failure would silently destroy
             # a previously-good, fully-resolved object (see TICKET-02 / P0-2).
-            is_downgrade = _STATE_QUALITY[resolution_result.state] < _STATE_QUALITY[previous_state]
+            is_downgrade = _is_downgrade(
+                resolution_result.state,
+                resolution_result.planets_lookup_failed,
+                previous_state,
+                record.planets_lookup_failed,
+            )
 
             if is_downgrade:
                 # Leave simbad_main_id/ra_deg/dec_deg/otype/spectral_type/

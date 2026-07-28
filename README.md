@@ -115,10 +115,10 @@ This is what actually happens between a search request and a rendered result; th
 5. **Cross-match** those aliases against the NASA Exoplanet Archive in a single batched query (not one HTTP request per alias) to find any known orbiting planets.
 6. **Classify** the result into one of [five explicit states](#b-what-are-the-five-states)—`RESOLVED`, `PARTIAL`, `AMBIGUOUS`, `UNRESOLVED`, `LOOKUP_FAILED`—rather than quietly picking one answer or silently failing. A `PARTIAL` result is further flagged if the "no planets" conclusion is itself unconfirmed (the Exoplanet Archive lookup failed, rather than a genuine zero-match).
 7. **Cache** the result: 14-day TTL for a confirmed result, 1 hour for anything unconfirmed or failed (`UNRESOLVED`/`AMBIGUOUS`/`LOOKUP_FAILED`, or a `PARTIAL` with an unconfirmed planet count), so failures self-heal quickly instead of sitting wrong for two weeks.
-8. **Render** the result page with the scientific data only. AI generation is deliberately *not* part of this synchronous path for the HTML `/search` flow; it only runs when the user explicitly clicks Generate (see III.A/III.B), so a slow Gemini call (observed up to ~42s for a single heavily-catalogued star) never blocks the page it's summarizing. **This is asymmetric with the JSON API**: `GET /api/resolve?q=...` *does* generate the AI summary synchronously as part of the same request, since there's no follow-up click available in a pure API context.
+8. **Render** the result page with the scientific data only. AI generation is deliberately *not* part of this synchronous path for the HTML `/search` flow; it only runs when the user explicitly clicks Generate (see III.A/III.B), so a slow Gemini call (observed up to ~42s for a single heavily-catalogued star) never blocks the page it's summarizing. **`GET /api/resolve?q=...` behaves the same way**: it deliberately does *not* generate an AI summary inline either, for the same reasons — a Gemini call at this point would be a second, independent call site that bypasses the AI-summary rate limiter and can't forward a personal API key, and a Gemini failure there would otherwise crash the route and roll back an already-successful catalog resolution. Regardless of entry point, a summary for a given object is fetched via the separate, rate-limited `POST /object/{id}/summary` route.
 9. **On a Generate/Regenerate request**, call Gemini using the app's own shared key; if that's specifically rate-limited and the requesting user has a personal key configured, retry once with theirs (see III.A). Whichever key succeeds, persist the result as the one shared `ai_summary` for that object, kept strictly separate from the scientific data so the AI layer can never corrupt or override what the SQL layer already established.
 
-Programmatic access to steps 1–7 (without the templated HTML) is available via `GET /api/resolve?q=...`, returning the same resolution data as JSON — see step 8's note on the one behavioral difference from the HTML flow.
+Programmatic access to steps 1–7 (without the templated HTML) is available via `GET /api/resolve?q=...`, returning the same resolution data as JSON — see step 8's note confirming this route also omits the AI summary, matching the HTML flow.
 
 ---
 
@@ -307,21 +307,21 @@ A logged-in user's personal copy of the AI summary they most recently generated/
 
 ### 7. The `rate_limit_events` Table
 
-An event log of Gemini-quota-spending actions (Generate/Regenerate clicks), used to enforce the per-client rate limit. Deliberately a log table rather than a counter column, so a sliding window can be computed by counting rows rather than resetting a counter on a timer.
+An event log of rate-limited actions, used to enforce per-client rate limits via a sliding window. Deliberately a log table rather than a counter column, so a sliding window can be computed by counting rows rather than resetting a counter on a timer. It backs two independent limiter tiers (see below), distinguished by `subject_type`.
 
 | Column Name | Data Type | Nullable? | Constraints / Notes |
 | :--- | :--- | :--- | :--- |
 | **id** | INTEGER | No | PRIMARY KEY |
-| **subject_type** | VARCHAR | No | CHECK (`user`, `session`) |
+| **subject_type** | VARCHAR | No | CHECK (`user`, `session`, `resolve_user`, `resolve_session`) |
 | **subject_id** | VARCHAR | No | |
 | **created_at** | DATETIME | No | |
 
 #### Detailed Column Explanations for `rate_limit_events`
 
 - **`id`**: Internal unique identifier for the log entry.
-- **`subject_type`**: `user` for a logged-in request (limited per `users.id`) or `session` for an anonymous request (limited per the Starlette session-cookie id, assigned to every visitor regardless of login state).
+- **`subject_type`**: One of four values, backing two independent limiter tiers. `user`/`session` gate AI-summary generation (Generate/Regenerate clicks) — `user` for a logged-in request (limited per `users.id`), `session` for an anonymous request (limited per the Starlette session-cookie id, assigned to every visitor regardless of login state). `resolve_user`/`resolve_session` gate catalog lookups themselves (`/search` and `/api/resolve`) via a separate, higher-ceiling limiter (`RESOLVE_RATE_LIMIT`, 60/hour) that protects outbound SIMBAD/Exoplanet Archive traffic rather than Gemini spend.
 - **`subject_id`**: The `users.id` or session id this event counts against, as a string — not a foreign key to `users.id`, since one column needs to hold both kinds of identifier uniformly, and log rows should survive a user account being deleted rather than needing `ON DELETE` handling on what's really just an audit trail.
-- **`created_at`**: When the request was made — the sliding window (20 requests/hour) is computed by counting rows newer than `now - 1 hour` for the same `(subject_type, subject_id)` pair.
+- **`created_at`**: When the request was made — each tier's own sliding window is computed by counting rows newer than `now - <that tier's window>` for the same `(subject_type, subject_id)` pair.
 
 ### 8. The `query_aliases` Table
 
@@ -486,6 +486,8 @@ They stop different failure modes:
 - The **rate limit** is per-*client* (logged-in user, or anonymous session); it stops exactly that: one visitor spending Gemini quota across many different objects in a short window, which the cooldown alone can't see, since it only ever looks at one object at a time.
 
 Both checks run on every Generate/Regenerate request; either can reject it independently.
+
+There's also a third, independent limiter that this FAQ entry doesn't cover above: a 60/hour `resolve_user`/`resolve_session` limit on `/search` and `/api/resolve` themselves (see [Section VI.7](#7-the-rate_limit_events-table)). It protects outbound SIMBAD/Exoplanet Archive traffic — a different resource than Gemini spend — so it's tracked separately from the two AI-summary limits described above.
 
 </details>
 

@@ -13,6 +13,14 @@ class SimbadLookupError(Exception):
     """Raised when a SIMBAD request could not be completed."""
 
 
+# Allow-list of characters that can legitimately appear in a catalog
+# identifier (e.g. "GJ 667 C", "TYC 1949-2020-1", "51 Peg", "Barnard's Star").
+# Anything outside this set is rejected before being interpolated into the
+# ADQL query string, as defense-in-depth alongside the existing quote
+# escaping (TAP's doQuery sync endpoint doesn't offer real bind parameters).
+_ALLOWED_IDENTIFIER_CHARS = re.compile(r"^[A-Za-z0-9 +\-.'\"*]*$")
+
+
 def normalize_query(query_text: str) -> str:
     """Clean up whitespace and normalize common catalog prefixes."""
     cleaned = re.sub(r"\s+", " ", (query_text or "").strip())
@@ -31,6 +39,15 @@ async def resolve_identity(query_text: str) -> dict | list[dict] | None:
     """Query SIMBAD for an object identity."""
     normalized = normalize_query(query_text)
     if not normalized:
+        return None
+
+    if not _ALLOWED_IDENTIFIER_CHARS.match(normalized):
+        # Structurally hostile input (e.g. containing ';', '(', ')') is
+        # treated the same as an empty query rather than sent upstream.
+        logger.warning(
+            "SIMBAD lookup rejected query_text=%r: contains disallowed characters",
+            normalized,
+        )
         return None
 
     escaped = normalized.replace("'", "''")
@@ -127,6 +144,21 @@ async def resolve_identity(query_text: str) -> dict | list[dict] | None:
             "aliases": aliases,
         }
         candidates.append(candidate)
+
+    # De-duplicate by main_id, preserving first-seen order, so the same
+    # underlying object never appears twice in the AMBIGUOUS disambiguation
+    # list (e.g. when it matched via more than one alias/ident row).
+    # Candidates without a main_id are never collapsed into one another.
+    seen_main_ids: set[str] = set()
+    deduped_candidates: list[dict[str, Any]] = []
+    for candidate in candidates:
+        main_id = candidate.get("main_id")
+        if main_id and main_id in seen_main_ids:
+            continue
+        if main_id:
+            seen_main_ids.add(main_id)
+        deduped_candidates.append(candidate)
+    candidates = deduped_candidates
 
     if len(candidates) == 1:
         return candidates[0]

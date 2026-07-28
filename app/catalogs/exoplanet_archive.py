@@ -1,6 +1,7 @@
 """Helpers for querying the NASA Exoplanet Archive."""
 
 import logging
+import re
 import time
 
 import httpx
@@ -10,6 +11,9 @@ logger = logging.getLogger(__name__)
 _BATCH_SIZE = 40
 
 _EXOPLANET_ARCHIVE_URL = "https://exoplanetarchive.ipac.caltech.edu/TAP/sync"
+
+# Same allow-list as app.catalogs.simbad -- see that module for rationale.
+_ALLOWED_IDENTIFIER_CHARS = re.compile(r"^[A-Za-z0-9 +\-.'\"*]*$")
 
 
 async def find_planets(alias_list: list[str]) -> tuple[list[dict], str | None, bool]:
@@ -37,8 +41,24 @@ async def find_planets(alias_list: list[str]) -> tuple[list[dict], str | None, b
 
 async def _query_hostnames(aliases: list[str]) -> dict[str, list[dict]] | None:
     """Run one batched query for a chunk of aliases."""
+    # Reject structurally hostile aliases before they're ever interpolated,
+    # rather than failing the whole batch. Second layer of defense alongside
+    # the quote-escaping below (TAP's doQuery sync endpoint doesn't offer
+    # real bind parameters).
+    safe_aliases = []
+    for alias in aliases:
+        if _ALLOWED_IDENTIFIER_CHARS.match(alias):
+            safe_aliases.append(alias)
+        else:
+            logger.warning(
+                "Exoplanet Archive lookup skipped alias %r: contains disallowed characters",
+                alias,
+            )
+    if not safe_aliases:
+        return {}
+
     # Escape embedded single quotes.
-    escaped = [alias.replace("'", "''") for alias in aliases]
+    escaped = [alias.replace("'", "''") for alias in safe_aliases]
     in_clause = ", ".join(f"'{value}'" for value in escaped)
     # No TOP limit here because a chunk can include multiple planets.
     query = (

@@ -185,3 +185,35 @@ async def test_find_planets_lookup_failed_is_false_when_a_later_chunk_finds_a_ma
     assert matched_alias == "Second Chunk Alias 0"
     assert len(planets) == 1
     assert lookup_failed is False
+
+
+@pytest.mark.asyncio
+async def test_find_planets_skips_structurally_hostile_alias():
+    """P2-4: an alias containing disallowed characters must not be sent upstream
+    (not present in the outgoing IN (...) clause), and must not fail the whole batch."""
+    client = _fake_client([])
+    with patch("httpx.AsyncClient", return_value=client):
+        planets, matched_alias, lookup_failed = await find_planets(
+            ["51 Peg", "Alias'); DROP TABLE pscomppars; --"]
+        )
+
+    assert planets == []
+    assert matched_alias is None
+    assert lookup_failed is False  # skipped, not a lookup failure
+
+    sent_query = client.post.await_args.kwargs["data"]["query"]
+    assert "51 Peg" in sent_query
+    assert "DROP TABLE" not in sent_query
+
+
+@pytest.mark.asyncio
+async def test_find_planets_allows_legitimate_aliases_with_special_chars():
+    """The allow-list must not reject real designations already exercised elsewhere
+    in the app (e.g. TYC/GJ-style identifiers with hyphens)."""
+    client = _fake_client([])
+    with patch("httpx.AsyncClient", return_value=client):
+        await find_planets(["GJ 667 C", "TYC 1949-2020-1", "Barnard's Star"])
+
+    sent_query = client.post.await_args.kwargs["data"]["query"]
+    assert "GJ 667 C" in sent_query
+    assert "TYC 1949-2020-1" in sent_query

@@ -174,3 +174,60 @@ async def test_resolve_identity_query_requests_one_more_row_than_the_display_cap
 
     sent_query = client.post.await_args.kwargs["data"]["query"]
     assert "TOP 11" in sent_query
+
+
+@pytest.mark.asyncio
+async def test_resolve_identity_deduplicates_candidates_by_main_id():
+    """P2-6: two rows sharing one main_id (matched via different aliases) must
+    collapse into a single candidate, not appear twice in the AMBIGUOUS list."""
+    rows = [
+        ["51 Peg", 344.36, 20.77, "Star", "G2V", "HD 217014|51 Peg"],
+        ["51 Peg", 344.36, 20.77, "Star", "G2V", "HD 217014|51 Peg"],
+        ["51 Peg B", 344.37, 20.78, "Star", "M4V", "HD 217014 B"],
+    ]
+    with patch("httpx.AsyncClient", return_value=_fake_client(_tap_envelope(rows))):
+        result = await resolve_identity("51 Peg")
+
+    assert isinstance(result, list)
+    assert len(result) == 2
+    assert {c["main_id"] for c in result} == {"51 Peg", "51 Peg B"}
+
+
+@pytest.mark.asyncio
+async def test_resolve_identity_dedup_collapses_to_single_dict_when_only_one_unique():
+    """If every row shares the same main_id, de-duplication should leave exactly
+    one candidate, which then hits the single-candidate short-circuit."""
+    rows = [
+        ["51 Peg", 344.36, 20.77, "Star", "G2V", "HD 217014|51 Peg"],
+        ["51 Peg", 344.36, 20.77, "Star", "G2V", "HD 217014|51 Peg"],
+    ]
+    with patch("httpx.AsyncClient", return_value=_fake_client(_tap_envelope(rows))):
+        result = await resolve_identity("51 Peg")
+
+    assert isinstance(result, dict)
+    assert result["main_id"] == "51 Peg"
+
+
+@pytest.mark.asyncio
+async def test_resolve_identity_rejects_structurally_hostile_query():
+    """P2-4: a query containing disallowed characters (e.g. parentheses/semicolons)
+    must be rejected before being sent upstream, rather than interpolated into the
+    ADQL query string."""
+    client = _fake_client(_tap_envelope([]))
+    with patch("httpx.AsyncClient", return_value=client):
+        result = await resolve_identity("51 Peg'); DROP TABLE basic; --")
+
+    assert result is None
+    client.post.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resolve_identity_allows_legitimate_identifiers_with_special_chars():
+    """The allow-list must not reject real designations used elsewhere in the app
+    (e.g. the README's own result examples)."""
+    client = _fake_client(_tap_envelope([]))
+    with patch("httpx.AsyncClient", return_value=client):
+        for identifier in ["51 Peg", "HD 217014", "GJ 667 C", "TYC 1949-2020-1", "Barnard's Star"]:
+            await resolve_identity(identifier)
+
+    assert client.post.await_count == 5

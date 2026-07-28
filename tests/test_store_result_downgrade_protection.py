@@ -176,3 +176,83 @@ async def test_downgrade_from_partial_to_lookup_failed_preserves_planets():
             .all()
         )
     assert [p.pl_name for p in planets] == ["51 Peg b"]
+
+
+@pytest.mark.asyncio
+async def test_confirmed_no_planets_survives_a_later_lookup_failure():
+    """P1-1: a confirmed PARTIAL (planets_lookup_failed=False) result must not
+    be silently overwritten by a same-state PARTIAL (planets_lookup_failed=True)
+    result -- both share the same _STATE_QUALITY score, so the cross-state
+    downgrade guard alone doesn't catch this transition."""
+    confirmed = ResolutionResult(
+        query_text="Barnard's Star",
+        state="PARTIAL",
+        main_id="Barnard's Star",
+        ra=269.45,
+        dec=4.69,
+        otype="Star",
+        spectral_type="M4V",
+        aliases=["Barnard's Star", "HIP 87937"],
+        resolved_via=["Barnard's Star", "Barnard's Star"],
+        planets_lookup_failed=False,
+    )
+    first = await cache_mod.store_result(confirmed, generate_ai_summary=False)
+    assert first.planets_lookup_failed is False
+
+    later_failure = ResolutionResult(
+        query_text="Barnard's Star",
+        state="PARTIAL",
+        main_id="Barnard's Star",
+        ra=269.45,
+        dec=4.69,
+        otype="Star",
+        spectral_type="M4V",
+        aliases=["Barnard's Star", "HIP 87937"],
+        resolved_via=["Barnard's Star", "Barnard's Star"],
+        planets_lookup_failed=True,
+    )
+    second = await cache_mod.store_result(later_failure, generate_ai_summary=False)
+
+    assert second.id == first.id
+    assert second.resolution_state == "PARTIAL"
+    assert second.planets_lookup_failed is False  # must NOT flip to True
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_partial_is_overwritten_by_confirmed_no_planets():
+    """Mirror direction: an unconfirmed PARTIAL (lookup failed) followed by a
+    confirmed PARTIAL (zero planets, successfully checked) is an improvement
+    and must still overwrite normally -- guards against an overly aggressive
+    fix that blocks same-state PARTIAL updates in both directions."""
+    unconfirmed = ResolutionResult(
+        query_text="Barnard's Star",
+        state="PARTIAL",
+        main_id="Barnard's Star",
+        ra=269.45,
+        dec=4.69,
+        otype="Star",
+        spectral_type="M4V",
+        aliases=["Barnard's Star", "HIP 87937"],
+        resolved_via=["Barnard's Star", "Barnard's Star"],
+        planets_lookup_failed=True,
+    )
+    first = await cache_mod.store_result(unconfirmed, generate_ai_summary=False)
+    assert first.planets_lookup_failed is True
+
+    confirmed = ResolutionResult(
+        query_text="Barnard's Star",
+        state="PARTIAL",
+        main_id="Barnard's Star",
+        ra=269.45,
+        dec=4.69,
+        otype="Star",
+        spectral_type="M4V",
+        aliases=["Barnard's Star", "HIP 87937"],
+        resolved_via=["Barnard's Star", "Barnard's Star"],
+        planets_lookup_failed=False,
+    )
+    second = await cache_mod.store_result(confirmed, generate_ai_summary=False)
+
+    assert second.id == first.id
+    assert second.resolution_state == "PARTIAL"
+    assert second.planets_lookup_failed is False  # improvement direction still overwrites
