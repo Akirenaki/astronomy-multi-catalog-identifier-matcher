@@ -1,8 +1,8 @@
-# **astronomy-multi-catalog-cross-matcher**
+# **astronomy-multi-catalog-identifier-matcher**
 
 ## **Table of Contents**
 
-1. [App Description](#i-app-description)
+1. [Short Description](#i-short-description)
 2. [Tech Stack & Hosting](#ii-tech-stack--hosting)
 3. [User Workflow](#iii-user-workflow)
 4. [Application Processing Pipeline](#iv-application-processing-pipeline)
@@ -13,11 +13,15 @@
 
 ---
 
-## **I. App Description**
+## **I. Short Description**
 
-An FastAPI WebApp that takes an unstructured, informally-typed star name, resolves it deterministically across independent astronomical catalogs via a cross-identification pipeline, and then, as a distinct, separate step, translates the resulting structured data into a plain-language explanation a non-specialist can actually read.
+An identifier-based astronomical cross-catalogue matching web application that takes a user's informal or catalogue-based stellar identifier, resolves the corresponding astronomical object through SIMBAD, and uses its known identifiers and aliases to find associated exoplanet data in the NASA Exoplanet Archive.
 
-**Architectural principle:** the deterministic resolution engine and the narrative layer are kept strictly separate: the AI layer can never affect matching logic or introduce a factual error the SQL layer didn't already contain.
+The application follows a deterministic resolution pipeline: user input is normalised, resolved against SIMBAD, expanded with known catalogue identifiers and aliases, and then matched against the NASA Exoplanet Archive to identify corresponding exoplanet host entries. The resulting scientific data is presented as structured information, with an optional AI-generated plain-language summary for non-specialist readers.
+
+Matching methodology: This project performs identifier-based cross-catalogue matching. It does not perform positional cross-matching based on angular separation, matching radii, or astrometric uncertainties. The use of identifiers and aliases is deliberate: for this SIMBAD–NASA Exoplanet Archive workflow, the relevant catalogues provide name-based information that allows corresponding objects to be identified without positional matching.
+
+Architectural principle: the deterministic resolution and matching engine and the narrative layer are kept strictly separate. The AI layer can never affect the matching logic or introduce a factual change to the underlying scientific data returned by the catalogue queries.
 
 The resolver, cross-matcher, and AI narrative are fully usable anonymously. An optional account layer sits on top for anyone who wants to save objects and keep a personal copy of the AI narratives they generate. See [Section IV](#iv-application-processing-pipeline).
 
@@ -72,8 +76,8 @@ No feature requiring scientific correctness is behind a login wall; search, cros
 1. **Clone and install.**
 
 ```bash
-   git clone https://github.com/Akirenaki/astronomy-multi-catalog-cross-matcher.git
-   cd astronomy-multi-catalog-cross-matcher
+   git clone https://github.com/Akirenaki/astronomy-multi-catalog-identifier-matcher.git
+   cd astronomy-multi-catalog-identifier-matcher
    python -m venv .venv && source .venv/bin/activate
    pip install -r requirements.txt
 ```
@@ -94,7 +98,7 @@ No feature requiring scientific correctness is behind a login wall; search, cros
    alembic upgrade head
 ```
 
-   This creates the tables (or applies any pending migrations) without touching existing data — the standard path for both a fresh clone and picking up a schema change after a `git pull`. `reset_db.py` (`python reset_db.py`) is still available, but is a **destructive full reset** (drops and recreates every table) intended for local development only — don't run it against data you want to keep.
+   This creates the tables (or applies any pending migrations) without touching existing data; the standard path for both a fresh clone and picking up a schema change after a `git pull`. `reset_db.py` (`python reset_db.py`) is still available, but is a **destructive full reset** (drops and recreates every table) intended for local development only — don't run it against data you want to keep.
 
 4. **Run it:**
 
@@ -114,10 +118,10 @@ This is what actually happens between a search request and a rendered result; th
 2. **Check the cache** — first an exact match on the normalized query string, then a fallback through the `query_aliases` table (so a different alias for an already-cached object, or the object's own canonical SIMBAD ID, still hits the cache instead of re-querying). A hit here skips everything below and serves immediately.
 3. **[Resolve](#a-what-does-resolve-mean)** identity against SIMBAD via a TAP/ADQL query: canonical name, coordinates, spectral type, and every known alias, in one round trip.
 4. **Expand aliases** (adding stripped catalog-prefix variants) to maximize the next step's hit rate.
-5. **Cross-match** those aliases against the NASA Exoplanet Archive in a single batched query (not one HTTP request per alias) to find any known orbiting planets.
+5. **Perform identifier-based cross-matching** by querying the NASA Exoplanet Archive in a single batched query to find any known orbiting planets.
 6. **Classify** the result into one of [five explicit states](#b-what-are-the-five-states)—`RESOLVED`, `PARTIAL`, `AMBIGUOUS`, `UNRESOLVED`, `LOOKUP_FAILED`—rather than quietly picking one answer or silently failing. A `PARTIAL` result is further flagged if the "no planets" conclusion is itself unconfirmed (the Exoplanet Archive lookup failed, rather than a genuine zero-match).
 7. **Cache** the result: 14-day TTL for a confirmed result, 1 hour for anything unconfirmed or failed (`UNRESOLVED`/`AMBIGUOUS`/`LOOKUP_FAILED`, or a `PARTIAL` with an unconfirmed planet count), so failures self-heal quickly instead of sitting wrong for two weeks.
-8. **Render** the result page with the scientific data only. AI generation is deliberately *not* part of this synchronous path for the HTML `/search` flow; it only runs when the user explicitly clicks Generate (see III.A/III.B), so a slow Gemini call (observed up to ~42s for a single heavily-catalogued star) never blocks the page it's summarizing. **`GET /api/resolve?q=...` behaves the same way**: it deliberately does *not* generate an AI summary inline either, for the same reasons — a Gemini call at this point would be a second, independent call site that bypasses the AI-summary rate limiter and can't forward a personal API key, and a Gemini failure there would otherwise crash the route and roll back an already-successful catalog resolution. Regardless of entry point, a summary for a given object is fetched via the separate, rate-limited `POST /object/{id}/summary` route.
+8. **Render** the result page with the scientific data only. AI generation is deliberately *not* part of this synchronous path for the HTML `/search` flow; it only runs when the user explicitly clicks Generate (see III.A/III.B), so a slow Gemini call (observed up to ~42s for a single heavily-catalogued star) never blocks the page it's summarising. **`GET /api/resolve?q=...` behaves the same way**: it deliberately does *not* generate an AI summary inline either, for the same reasons; a Gemini call at this point would be a second, independent call site that bypasses the AI-summary rate limiter and can't forward a personal API key, and a Gemini failure there would otherwise crash the route and roll back an already-successful catalog resolution. Regardless of entry point, a summary for a given object is fetched via the separate, rate-limited `POST /object/{id}/summary` route.
 9. **On a Generate/Regenerate request**, call Gemini using the app's own shared key; if that's specifically rate-limited and the requesting user has a personal key configured, retry once with theirs (see III.A). Whichever key succeeds, persist the result as the one shared `ai_summary` for that object, kept strictly separate from the scientific data so the AI layer can never corrupt or override what the SQL layer already established.
 
 Programmatic access to steps 1–7 (without the templated HTML) is available via `GET /api/resolve?q=...`, returning the same resolution data as JSON — see step 8's note confirming this route also omits the AI summary, matching the HTML flow.
