@@ -12,5 +12,6 @@ bcrypt
 cryptography
 itsdangerous
 python-multipart
+alembic
 pytest
 pytest-asyncio

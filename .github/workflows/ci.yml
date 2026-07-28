@@ -27,3 +27,9 @@ jobs:
 
       - name: Run tests
         run: pytest -q
+
+      - name: Check for pending Alembic model changes
+        run: |
+          rm -f ./_ci_alembic_check.db
+          DATABASE_URL="sqlite+aiosqlite:///./_ci_alembic_check.db" alembic upgrade head
+          DATABASE_URL="sqlite+aiosqlite:///./_ci_alembic_check.db" alembic check
