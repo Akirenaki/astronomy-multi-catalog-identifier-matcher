@@ -38,9 +38,12 @@ def _mock_simbad(monkeypatch, call_counter):
 
     monkeypatch.setattr("app.resolver.resolve_identity", fake_resolve_identity)
     monkeypatch.setattr("app.resolver.find_planets", AsyncMock(return_value=([], None, False)))
-    # /api/resolve calls get_or_resolve() with its default generate_ai_summary=True,
-    # so mock the Gemini call too -- these tests are only about the rate limit and
-    # length cap, not about AI-summary generation itself.
+    # main.py's /api/resolve route explicitly passes generate_ai_summary=False,
+    # so no Gemini call should happen on this path -- but generate_summary is
+    # mocked anyway as a defensive belt-and-suspenders measure, since these
+    # tests are only about the rate limit and length cap, not AI-summary
+    # generation, and a future change to that route shouldn't turn these
+    # tests into ones that make real Gemini calls.
     monkeypatch.setattr("app.cache.generate_summary", AsyncMock(return_value="a summary"))
 
 

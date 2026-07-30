@@ -13,6 +13,7 @@ from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+from sqlalchemy import text
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.auth import (
@@ -45,7 +46,7 @@ from app.cache import (
     remove_favorite,
     save_user_summary_snapshot,
 )
-from app.database import init_db
+from app.database import engine, init_db
 from app.models import User
 from app.narrative import GeminiGenerationError, GeminiRateLimitedError, render_summary_markdown
 from app.ratelimit import RateLimitExceededError, check_limit, record_usage
@@ -67,12 +68,40 @@ RESOLVE_RATE_LIMIT_WINDOW = timedelta(hours=1)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize the database on startup."""
-    await init_db()
+    """On startup, verify the database schema is present.
+
+    Historically this unconditionally called init_db() (create_all()) on
+    every startup, which happily created any *missing* tables even in
+    environments meant to be managed exclusively by Alembic migrations --
+    silently masking a forgotten `alembic upgrade head` instead of failing
+    loudly. create_all() is still available as an explicit, opt-in dev
+    convenience via DEV_AUTO_CREATE_SCHEMA=1 (docker-compose/local dev
+    without Alembic set up); everywhere else, startup now does a cheap
+    read-only check that a known table exists and fails fast with a clear
+    error if it doesn't, instead of silently drifting the schema.
+
+    The test suite is unaffected: test fixtures create/drop tables directly
+    via `Base.metadata.create_all`/`init_db()` before each test's
+    `TestClient` (and therefore this lifespan) runs, so the schema already
+    exists by the time this check executes.
+    """
+    if os.getenv("DEV_AUTO_CREATE_SCHEMA", "").strip().lower() in ("1", "true", "yes"):
+        await init_db()
+    else:
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text("SELECT 1 FROM users LIMIT 1"))
+        except Exception as exc:
+            raise RuntimeError(
+                "Database schema check failed on startup (expected table 'users' "
+                "not found or not queryable). Run 'alembic upgrade head' before "
+                "starting the app, or set DEV_AUTO_CREATE_SCHEMA=1 for local dev "
+                "without Alembic."
+            ) from exc
     yield
 
 
-app = FastAPI(title="Astronomy Multi-Catalog Cross-Matcher", lifespan=lifespan)
+app = FastAPI(title="Astronomy Multi-Catalog Identifier-Matcher", lifespan=lifespan)
 
 # Session cookies back login state and anonymous rate limiting.
 _session_secret_key = os.getenv("SESSION_SECRET_KEY")

@@ -76,6 +76,28 @@ async def test_store_result_survives_gemini_failure_when_summary_requested(monke
     assert record.ai_summary is None
 
 
+@pytest.mark.asyncio
+async def test_store_result_sets_generated_at_when_summary_requested(monkeypatch):
+    """[F3] A successful inline (generate_ai_summary=True) summary call must
+    set ai_summary_generated_at, same as ensure_ai_summary()/
+    regenerate_ai_summary() do -- the README documents this as an invariant
+    ("ai_summary_generated_at: Set on real (re)generation only, never on a
+    cache hit"), and regenerate_ai_summary()'s cooldown check is gated on
+    this field being non-None whenever ai_summary is set."""
+
+    async def _fake_summary(*args, **kwargs):
+        return "a generated summary"
+
+    monkeypatch.setattr(cache_mod, "generate_summary", _fake_summary)
+
+    before = datetime.now(timezone.utc)
+    record = await cache_mod.store_result(_resolved_result(), generate_ai_summary=True)
+
+    assert record.ai_summary == "a generated summary"
+    assert record.ai_summary_generated_at is not None
+    assert record.ai_summary_generated_at >= before - timedelta(seconds=5)
+
+
 # ---------------------------------------------------------------------------
 # TICKET-02
 # ---------------------------------------------------------------------------

@@ -12,11 +12,24 @@ from app.models import Base
 
 load_environment()
 
+def get_connect_args(url: str) -> dict:
+    """Return the connect_args this app uses for a given database URL.
+
+    Postgres URLs require TLS on essentially every managed provider this
+    project targets (Neon, Render Postgres, Supabase, ...); asyncpg does not
+    enable TLS on its own. Factored out so alembic/env.py can build its own
+    engine with the exact same connect_args instead of silently connecting
+    without TLS -- see F4 in the 2026-07 architectural audit.
+    """
+    if url.startswith("postgresql://") or url.startswith("postgres://") or url.startswith("postgresql+asyncpg://"):
+        return {"ssl": "require"}
+    return {}
+
+
 _raw_database_url = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./astronomy.db")
-_connect_args: dict = {}
+_connect_args = get_connect_args(_raw_database_url)
 if _raw_database_url.startswith("postgresql://") or _raw_database_url.startswith("postgres://"):
     DATABASE_URL = make_url(_raw_database_url).set(drivername="postgresql+asyncpg", query={})
-    _connect_args = {"ssl": "require"}
 else:
     DATABASE_URL = _raw_database_url
 

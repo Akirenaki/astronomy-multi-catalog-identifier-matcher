@@ -342,6 +342,7 @@ async def store_result(resolution_result: ResolutionResult, *, generate_ai_summa
             }
             try:
                 record.ai_summary = await generate_summary(summary_payload)
+                record.ai_summary_generated_at = datetime.now(timezone.utc)
             except GeminiGenerationError:
                 # Defense in depth: any future caller of store_result(...,
                 # generate_ai_summary=True) shouldn't have a Gemini hiccup

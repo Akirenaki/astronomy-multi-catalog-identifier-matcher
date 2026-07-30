@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from alembic import context
 
 from app.database import engine as app_engine
+from app.database import get_connect_args
 from app.models import Base
 
 # this is the Alembic Config object, which provides
@@ -63,6 +64,7 @@ async def run_migrations_online() -> None:
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args=get_connect_args(str(app_engine.url)),
     )
 
     async with connectable.connect() as connection:

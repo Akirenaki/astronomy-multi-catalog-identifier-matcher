@@ -1,5 +1,5 @@
 /*
- * Astronomy Multi-Catalog Cross-Matcher -- design system.
+ * Astronomy Multi-Catalog Identifier-Matcher -- design system.
  *
  * One stylesheet, no build step, no framework -- this is a Jinja2/FastAPI app
  * with no bundler in the pipeline, so utility classes are hand-rolled rather

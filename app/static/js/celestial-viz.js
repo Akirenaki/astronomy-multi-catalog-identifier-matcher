@@ -46,6 +46,29 @@
  * toEcliptic() for a handful of (RA, Dec, lat, LST, obliquity) combinations
  * before being wired up here.
  *
+ * -- Azimuth mirror fix (2026-07) ----------------------------------------
+ * The "checked by hand" claim above turned out to only have been exercised
+ * at LST=0 / meridian-crossing cases, where the bug below is numerically
+ * invisible. A later audit found the 3D scene placed stars at the mirror
+ * image of their true azimuth (east/west flipped) versus toHorizontal(),
+ * for any case with a non-degenerate LST. Root cause: raDecLocalDir()
+ * negates RA (`sin(-a)`) so the sky reads correctly "from inside the
+ * globe" -- this is a reflection (call it Mx, negating the local X
+ * component) applied to the direction vector *before* qEquat rotates it.
+ * A reflection composed with a rotation is not undone by flipping the
+ * sign of that rotation's angle (Mx . Ry(th) = Ry(-th) . Mx algebraically,
+ * and verified numerically against the real three.js build across a dozen
+ * (ra, dec, lat, lst) cases, including polar and near-horizon ones): no
+ * choice of qSpin's sign can cancel Mx, it only relocates which rotation
+ * angle Mx ends up wrapping. The actual fix cancels Mx where it must be
+ * cancelled: on the resulting *world* position, by negating world.x right
+ * after `raDecLocalDir(...).applyQuaternion(qEquat)` (see updateStar()'s
+ * star placement and layout()'s equinox-marker placement). This leaves
+ * raDecLocalDir(), toHorizontal(), toEcliptic(), qTilt and qSpin exactly
+ * as they were -- confirmed by direct comparison against toHorizontal()
+ * for RA/Dec/lat/LST spanning due-north, due-south, LST 6h ahead and 6h
+ * behind, and near-polar cases (see tests/test_celestial_viz_azimuth.py).
+ *
  * One thing this does *not* fix, deliberately: LST is still applied by
  * spinning the equatorial frame rather than spinning the observer under a
  * fixed inertial frame. Physically, the equatorial grid should be fixed and
@@ -447,6 +470,7 @@
 
       var eqDir = raDecLocalDir(THREE, 0, 0).multiplyScalar(1.9); // RA=0/Dec=0, same convention as star placement
       var v = eqDir.clone().applyQuaternion(qEquat);
+      v.x = -v.x; // undo raDecLocalDir()'s RA mirror in world space (see header comment, "Azimuth mirror fix")
       equinoxMark.position.copy(v);
       equinoxLabel.position.copy(v.clone().multiplyScalar(1.18));
 
@@ -461,6 +485,7 @@
       var qEquat = equatGroup.quaternion;
       var dir = raDecLocalDir(THREE, s.ra, s.dec).multiplyScalar(1.95);
       var world = dir.clone().applyQuaternion(qEquat);
+      world.x = -world.x; // undo raDecLocalDir()'s RA mirror in world space (see header comment, "Azimuth mirror fix")
 
       starMesh.position.copy(world);
       starGlow.position.copy(world);

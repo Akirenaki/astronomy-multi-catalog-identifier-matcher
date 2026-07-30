@@ -94,6 +94,7 @@ No feature requiring scientific correctness is behind a login wall; search, cros
    | `SESSION_SECRET_KEY` | Recommended | Signs login session cookies. Without it, the app runs fine but generates a random key per process, so everyone gets logged out on every restart. Generate one with `python -c "import secrets; print(secrets.token_hex(32))"`. This one *does* work via `.env` today. |
    | `USER_SECRET_ENCRYPTION_KEY` | Recommended if you will use personal Gemini keys | Encrypts personal Gemini API keys at rest (see III.A). Without it, the app runs fine, but any saved personal keys become unreadable after a restart (a random key is generated per process, with a warning logged). Must be a valid Fernet key: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. As with `DATABASE_URL` above, a `.env`-only value is [honoured](#g-what-does-honoured-here-means), since `load_environment()` runs before this variable is read. **If you already have a production database from before this feature existed**, the current Alembic baseline (see [Section VI](#vi-database-schema)) was captured *after* these columns were added, so it can't retroactively add them to an older database it was never run against — you still need to manually run `ALTER TABLE users ADD COLUMN gemini_api_key_encrypted TEXT; ALTER TABLE users ADD COLUMN gemini_preferred_model VARCHAR;` (or the SQLite equivalent) once, then `alembic stamp head` so Alembic considers your database up to date. Any *future* schema change will apply automatically via `alembic upgrade head`, with no more manual `ALTER TABLE` steps needed after that. |
    | `FORCE_HTTPS_COOKIES` | Recommended for any deployment reachable over HTTPS | Set to `true`/`1`/`yes` to mark the session cookie `Secure` (Starlette's `SessionMiddleware` otherwise defaults to sending it over plain HTTP too). Leave unset for local `http://localhost` development. |
+   | `DEV_AUTO_CREATE_SCHEMA` | Local dev only, without Alembic | Set to `true`/`1`/`yes` to have app startup call `create_all()` and create any missing tables itself, like it always used to. Leave unset everywhere else — Alembic (`alembic upgrade head`) is the source of truth for schema changes, and letting the app create its own schema outside of that risks Alembic and the live database silently disagreeing later. |
 
 3. **Create/upgrade the database schema:**
 
@@ -102,6 +103,8 @@ No feature requiring scientific correctness is behind a login wall; search, cros
 ```
 
    This creates the tables (or applies any pending migrations) without touching existing data; the standard path for both a fresh clone and picking up a schema change after a `git pull`. `reset_db.py` (`python reset_db.py`) is still available, but is a **destructive full reset** (drops and recreates every table) intended for local development only — don't run it against data you want to keep.
+
+   **The deploy process must run `alembic upgrade head` before starting the app; do not rely on the app to create its own schema in production.** By default, app startup only does a lightweight check that the schema already exists and fails fast with a clear error if it doesn't. For local dev without Alembic set up, set `DEV_AUTO_CREATE_SCHEMA=true` to fall back to the old `create_all()`-on-startup behavior instead.
 
 4. **Run it:**
 

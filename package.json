@@ -1,0 +1,8 @@
+{
+  "name": "astronomy-multi-catalog-identifier-matcher",
+  "private": true,
+  "description": "Dev-only Node dependency for running tests/test_celestial_viz_azimuth.py and tests/test_celestial_viz_dms_rounding.py, which execute real celestial-viz.js source through Node. Not used by the app itself (no bundler/build step exists or is needed).",
+  "devDependencies": {
+    "three": "0.128.0"
+  }
+}
