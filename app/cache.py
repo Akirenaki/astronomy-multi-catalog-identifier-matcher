@@ -20,7 +20,7 @@ from app.models import (
     UserSummarySnapshot,
 )
 from app.narrative import GeminiGenerationError, generate_summary
-from app.resolver import ResolutionResult, resolve_query
+from app.resolver import ResolutionResult, _without_simbad_type_prefix, resolve_query
 from app.catalogs.simbad import normalize_query
 
 logger = logging.getLogger(__name__)
@@ -300,13 +300,37 @@ async def store_result(resolution_result: ResolutionResult, *, generate_ai_summa
         # PARTIAL+planets_lookup_failed case) new alias list here would just
         # create duplicates alongside the preserved data.
         if not is_downgrade:
+            direct_matches = {
+                alias
+                for alias in resolution_result.aliases
+                if alias == resolution_result.matched_alias
+                or (
+                    resolution_result.matched_alias is not None
+                    and _without_simbad_type_prefix(alias) == resolution_result.matched_alias
+                )
+            }
+            # If nothing in the persisted aliases matches -- because the
+            # Exoplanet Archive match actually came through main_id (or a
+            # type-classifier-stripped variant of it), and main_id is never
+            # itself stored as its own IdentifierRecord -- fall back to
+            # flagging every persisted identifier, since they all name the
+            # same RESOLVED object that main_id's match confirmed has
+            # planets. See TICKET-101.
+            matched_via_main_id = not direct_matches and resolution_result.matched_alias is not None and (
+                resolution_result.matched_alias == resolution_result.main_id
+                or (
+                    resolution_result.main_id is not None
+                    and _without_simbad_type_prefix(resolution_result.main_id) == resolution_result.matched_alias
+                )
+            )
             for alias in resolution_result.aliases:
+                is_match = matched_via_main_id or alias in direct_matches
                 session.add(
                     IdentifierRecord(
                         object_id=record.id,
                         catalog="SIMBAD",
                         identifier=alias,
-                        matched_exoplanet_archive=alias == resolution_result.matched_alias,
+                        matched_exoplanet_archive=is_match,
                     )
                 )
 

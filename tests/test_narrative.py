@@ -61,3 +61,13 @@ async def test_generate_summary_omits_state_and_uses_prompt_instructions(monkeyp
     assert "RESOLVED" not in captured["contents"]
     assert "You are an astronomy professor" in captured["contents"]
     assert "Prioritise accuracy over persuasion" in captured["contents"]
+
+
+def test_summary_prompt_includes_anti_hallucination_instruction():
+    """TICKET-103 / Finding F4: the prompt must explicitly constrain Gemini to
+    only the supplied Object data, matching the project's own stated
+    architectural principle that the AI layer cannot introduce facts the
+    catalogue queries didn't return."""
+    prompt = narrative._build_summary_prompt({"main_id": "51 Peg"})
+    assert "only the facts listed under 'Object data'" in prompt
+    assert "Do not state additional facts" in prompt

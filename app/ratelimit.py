@@ -106,3 +106,25 @@ async def check_and_record(
     """Check and record in one call."""
     await check_limit(subject_type, subject_id, limit=limit, window=window)
     await record_usage(subject_type, subject_id)
+
+
+# F6: rate_limit_events is a deliberately append-only event log (see the
+# module comment above), so nothing ever deleted old rows -- over a
+# long-lived deployment the table grows without bound. This retains rows
+# for a full day, comfortably longer than any window currently in use
+# (1 hour for AI summaries/resolves, 15 minutes for auth), and is invoked
+# periodically by a lightweight in-process background task started from
+# app.main's lifespan rather than requiring a separately-configured cron
+# job (Render's Pre-Deploy/Cron features aren't available on the free tier).
+RATE_LIMIT_EVENT_RETENTION = timedelta(hours=24)
+
+
+async def purge_old_rate_limit_events(*, older_than: timedelta | None = None) -> int:
+    """Delete rate_limit_events rows older than `older_than`. Returns row count deleted."""
+    from sqlalchemy import delete
+
+    cutoff = datetime.now(timezone.utc) - (older_than or RATE_LIMIT_EVENT_RETENTION)
+    async with SessionLocal() as session:
+        result = await session.execute(delete(RateLimitEvent).where(RateLimitEvent.created_at < cutoff))
+        await session.commit()
+        return result.rowcount or 0

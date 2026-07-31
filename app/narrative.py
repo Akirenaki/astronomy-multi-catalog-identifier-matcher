@@ -44,7 +44,10 @@ SUMMARY_PROMPT = (
     "rather than overly short responses. Avoid rhetorical flourishes and "
     "exaggerated praise. Maintain a cordial but objective tone. "
     "Do not mention internal pipeline states, resolution labels, or database "
-    "implementation details. Do not use headings or code fences."
+    "implementation details. Do not use headings or code fences. "
+    "Use only the facts listed under 'Object data' below. Do not state "
+    "additional facts, figures, or planets not listed there, even if you "
+    "believe you know them independently."
 )
 
 _markdown_renderer = MarkdownIt("commonmark", {"html": False}) if MarkdownIt is not None else None

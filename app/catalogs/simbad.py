@@ -164,6 +164,13 @@ async def resolve_identity(query_text: str) -> dict | list[dict] | None:
         return candidates[0]
 
     # Truncate large result sets and mark them as truncated.
+    # NOTE (F7, low-priority/acknowledged imprecision): we only fetch
+    # _DISPLAY_CAP + 1 rows, so if the true post-dedup candidate count is
+    # exactly _DISPLAY_CAP + 1 (11), this still reports candidates_truncated
+    # = True even though every match was already fetched. The user-facing
+    # remedy ("try a more specific identifier") is harmless either way, so
+    # this is left as-is rather than over-fetching on every query to resolve
+    # an edge case with no real downside.
     if len(candidates) > _DISPLAY_CAP:
         candidates = candidates[:_DISPLAY_CAP]
         for candidate in candidates:

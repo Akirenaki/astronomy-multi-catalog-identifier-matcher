@@ -4,8 +4,11 @@ import json
 import logging
 import os
 import secrets
+import asyncio
+import contextlib
 from contextlib import asynccontextmanager
 from datetime import timedelta
+from pathlib import Path
 from markupsafe import Markup
 from urllib.parse import quote
 
@@ -49,7 +52,7 @@ from app.cache import (
 from app.database import engine, init_db
 from app.models import User
 from app.narrative import GeminiGenerationError, GeminiRateLimitedError, render_summary_markdown
-from app.ratelimit import RateLimitExceededError, check_limit, record_usage
+from app.ratelimit import RateLimitExceededError, check_limit, purge_old_rate_limit_events, record_usage
 
 # Configure logging.
 logging.basicConfig(
@@ -64,6 +67,13 @@ logger = logging.getLogger(__name__)
 # every novel query, so they get their own, higher ceiling.
 RESOLVE_RATE_LIMIT = 60
 RESOLVE_RATE_LIMIT_WINDOW = timedelta(hours=1)
+
+# Auth attempts are tracked per anonymous session id (there's no user id yet
+# at this point). Login only counts *failed* attempts, so a legitimate user
+# who mistypes their password once isn't penalised; registration counts
+# every attempt since there's no equivalent "don't punish success" case.
+AUTH_RATE_LIMIT = 10
+AUTH_RATE_LIMIT_WINDOW = timedelta(minutes=15)
 
 
 @asynccontextmanager
@@ -98,7 +108,30 @@ async def lifespan(app: FastAPI):
                 "starting the app, or set DEV_AUTO_CREATE_SCHEMA=1 for local dev "
                 "without Alembic."
             ) from exc
-    yield
+
+    # F6: periodically purge stale rate_limit_events rows so the append-only
+    # event log doesn't grow forever on a long-lived deployment. Runs
+    # in-process rather than as a separate cron job/Render Pre-Deploy step,
+    # since that feature isn't available on Render's free tier.
+    async def _rate_limit_cleanup_loop() -> None:
+        while True:
+            try:
+                await asyncio.sleep(6 * 60 * 60)
+                deleted = await purge_old_rate_limit_events()
+                if deleted:
+                    logger.info("Purged %d stale rate_limit_events rows", deleted)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("rate_limit_events cleanup task failed; will retry next cycle")
+
+    cleanup_task = asyncio.create_task(_rate_limit_cleanup_loop())
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await cleanup_task
 
 
 app = FastAPI(title="Astronomy Multi-Catalog Identifier-Matcher", lifespan=lifespan)
@@ -121,7 +154,9 @@ app.add_middleware(
 )
 
 # Serve static assets.
-app.mount("/static", StaticFiles(directory="app/static"), name="static")
+_APP_DIR = Path(__file__).resolve().parent
+
+app.mount("/static", StaticFiles(directory=_APP_DIR / "static"), name="static")
 
 def _tojson(value) -> Markup:
     """Render a Python value as a JSON literal for templates."""
@@ -129,7 +164,7 @@ def _tojson(value) -> Markup:
 
 
 # Load templates with HTML escaping enabled.
-env = Environment(loader=FileSystemLoader("app/templates"), autoescape=select_autoescape(["html"]))
+env = Environment(loader=FileSystemLoader(_APP_DIR / "templates"), autoescape=select_autoescape(["html"]))
 env.filters["render_summary_markdown"] = render_summary_markdown
 env.filters["tojson"] = _tojson
 env.globals["csrf_token"] = get_csrf_token
@@ -408,18 +443,36 @@ async def register_submit(
     request: Request, email: str = Form(...), password: str = Form(...), next: str | None = Form(None)
 ) -> HTMLResponse | RedirectResponse:
     """Create a new user and log them in."""
+    subject_id = get_session_id(request)
+    try:
+        await check_limit("auth", subject_id, limit=AUTH_RATE_LIMIT, window=AUTH_RATE_LIMIT_WINDOW)
+    except RateLimitExceededError as exc:
+        template = env.get_template("register.html")
+        html = template.render(
+            request=request,
+            error=(
+                "Too many attempts. "
+                f"Please try again in about {exc.retry_after_seconds} seconds."
+            ),
+            next=next,
+        )
+        return HTMLResponse(content=html, status_code=429)
+
     normalized_email = email.strip().lower()
     try:
         user = await create_user(email=normalized_email, password=password)
     except DuplicateEmailError:
+        await record_usage("auth", subject_id)
         template = env.get_template("register.html")
         html = template.render(request=request, error="That email is already registered.", next=next)
         return HTMLResponse(content=html, status_code=400)
     except ValueError as exc:
+        await record_usage("auth", subject_id)
         template = env.get_template("register.html")
         html = template.render(request=request, error=str(exc), next=next)
         return HTMLResponse(content=html, status_code=400)
 
+    await record_usage("auth", subject_id)
     log_in_session(request, user)
     return RedirectResponse(url=_safe_next_path(next), status_code=303)
 
@@ -437,8 +490,26 @@ async def login_submit(
     request: Request, email: str = Form(...), password: str = Form(...), next: str | None = Form(None)
 ) -> HTMLResponse | RedirectResponse:
     """Verify credentials and log the user in."""
+    subject_id = get_session_id(request)
+    try:
+        await check_limit("auth", subject_id, limit=AUTH_RATE_LIMIT, window=AUTH_RATE_LIMIT_WINDOW)
+    except RateLimitExceededError as exc:
+        template = env.get_template("login.html")
+        html = template.render(
+            request=request,
+            error=(
+                "Too many attempts. "
+                f"Please try again in about {exc.retry_after_seconds} seconds."
+            ),
+            next=next,
+        )
+        return HTMLResponse(content=html, status_code=429)
+
     user = await authenticate(email.strip().lower(), password)
     if user is None:
+        # Only failed attempts count against the limit, so a legitimate user
+        # who mistypes their password once isn't locked out.
+        await record_usage("auth", subject_id)
         template = env.get_template("login.html")
         html = template.render(request=request, error="Incorrect email or password.", next=next)
         return HTMLResponse(content=html, status_code=400)

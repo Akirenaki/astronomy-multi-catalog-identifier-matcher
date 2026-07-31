@@ -217,7 +217,7 @@ class RateLimitEvent(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "subject_type IN ('user','session','resolve_user','resolve_session')",
+            "subject_type IN ('user','session','resolve_user','resolve_session','auth')",
             name="ck_rate_limit_subject_type",
         ),
         # check_limit() filters by exactly (subject_type, subject_id, created_at) on
