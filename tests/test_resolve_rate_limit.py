@@ -91,3 +91,54 @@ def test_search_allows_requests_under_the_limit(monkeypatch):
         assert response.status_code == 200
 
     assert call_counter["count"] == 5
+
+
+def test_object_profile_rejects_after_limit_with_no_further_simbad_calls(monkeypatch):
+    """TICKET-R3-01 / Finding F1: GET /object/{id} must be gated by the same
+    resolve rate limiter as /search and /api/resolve. Each request below
+    targets a distinct, never-before-cached id so every one is a genuine
+    cache miss that would otherwise reach get_or_resolve() unthrottled."""
+    call_counter = {"count": 0}
+    _mock_simbad(monkeypatch, call_counter)
+    monkeypatch.setattr(main_mod, "RESOLVE_RATE_LIMIT", 3)
+
+    client = TestClient(app)
+
+    for i in range(3):
+        response = client.get(f"/object/distinct-object-{i}")
+        assert response.status_code == 200
+
+    assert call_counter["count"] == 3
+
+    response = client.get("/object/distinct-object-4")
+    assert response.status_code == 429
+    # No further SIMBAD call should have been made once the limit is hit.
+    assert call_counter["count"] == 3
+
+
+def test_object_profile_cache_hit_is_never_rate_limited(monkeypatch):
+    """A cache hit on /object/{id} must stay free, exactly as it does on
+    /search and /api/resolve -- only the code path that triggers a live
+    resolution (obj is None) should be gated."""
+    call_counter = {"count": 0}
+    _mock_simbad(monkeypatch, call_counter)
+    monkeypatch.setattr(main_mod, "RESOLVE_RATE_LIMIT", 1)
+
+    client = TestClient(app)
+
+    # First request is a cache miss (the path segment is never a hit on the
+    # first lookup), consuming the only allotted rate-limit slot. The mock
+    # always resolves to main_id "* alf Ori" regardless of query text, so
+    # subsequent lookups by that same main_id are genuine cache hits.
+    first = client.get("/object/repeat-object")
+    assert first.status_code == 200
+    assert call_counter["count"] == 1
+
+    # Subsequent requests keyed on the now-cached SIMBAD main_id must not be
+    # rate limited or trigger further SIMBAD calls, even though the limit of
+    # 1 has already been used up.
+    for _ in range(5):
+        response = client.get("/object/* alf Ori")
+        assert response.status_code == 200
+
+    assert call_counter["count"] == 1

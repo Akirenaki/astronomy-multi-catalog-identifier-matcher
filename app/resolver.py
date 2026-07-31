@@ -47,19 +47,19 @@ async def resolve_query(query_text: str) -> ResolutionResult:
     normalized_query = normalize_query(query_text)
     simbad_started_at = time.perf_counter()
     try:
-        simbad_result = await resolve_identity(normalized_query or query_text)
+        simbad_result = await resolve_identity(normalized_query)
     except SimbadLookupError:
         logger.info("SIMBAD stage: failed after %.3fs", time.perf_counter() - simbad_started_at)
         # Treat lookup failures separately from genuine no-match results.
-        return ResolutionResult(query_text=normalized_query or query_text, state="LOOKUP_FAILED")
+        return ResolutionResult(query_text=normalized_query, state="LOOKUP_FAILED")
     logger.info("SIMBAD stage: completed in %.3fs", time.perf_counter() - simbad_started_at)
 
     if simbad_result is None:
-        return ResolutionResult(query_text=normalized_query or query_text, state="UNRESOLVED")
+        return ResolutionResult(query_text=normalized_query, state="UNRESOLVED")
 
     if isinstance(simbad_result, list):
         return ResolutionResult(
-            query_text=normalized_query or query_text,
+            query_text=normalized_query,
             state="AMBIGUOUS",
             candidates=simbad_result,
         )
@@ -104,7 +104,7 @@ async def resolve_query(query_text: str) -> ResolutionResult:
 
     if planets:
         return ResolutionResult(
-            query_text=normalized_query or query_text,
+            query_text=normalized_query,
             state="RESOLVED",
             main_id=simbad_result.get("main_id"),
             ra=simbad_result.get("ra"),
@@ -116,13 +116,13 @@ async def resolve_query(query_text: str) -> ResolutionResult:
             matched_alias=matched_alias,
             resolved_via=[
                 step
-                for step in (normalized_query or query_text, simbad_result.get("main_id"), matched_alias)
+                for step in (normalized_query, simbad_result.get("main_id"), matched_alias)
                 if step
             ],
         )
 
     return ResolutionResult(
-        query_text=normalized_query or query_text,
+        query_text=normalized_query,
         state="PARTIAL",
         main_id=simbad_result.get("main_id"),
         ra=simbad_result.get("ra"),
@@ -132,6 +132,6 @@ async def resolve_query(query_text: str) -> ResolutionResult:
         aliases=aliases,
         planets=planets,
         matched_alias=matched_alias,
-        resolved_via=[step for step in (normalized_query or query_text, simbad_result.get("main_id")) if step],
+        resolved_via=[step for step in (normalized_query, simbad_result.get("main_id")) if step],
         planets_lookup_failed=planets_lookup_failed,
     )

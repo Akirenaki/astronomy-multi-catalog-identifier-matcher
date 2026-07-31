@@ -26,6 +26,28 @@ async def test_resolver_returns_unresolved_when_simbad_has_no_match(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_resolver_normalizes_whitespace_only_query_instead_of_falling_back_to_raw_text(monkeypatch):
+    """TICKET-R3-02 / Finding F3: resolve_query() must use the normalized
+    (empty) form of a whitespace-only query, not fall back to the raw,
+    un-normalized input text."""
+
+    async def fake_simbad(query_text: str):
+        assert query_text == ""
+        return None
+
+    async def fake_planets(alias_list):
+        return [], None, False
+
+    monkeypatch.setattr("app.resolver.resolve_identity", fake_simbad)
+    monkeypatch.setattr("app.resolver.find_planets", fake_planets)
+
+    result = await resolve_query("   ")
+
+    assert result.query_text == ""
+    assert result.state == "UNRESOLVED"
+
+
+@pytest.mark.asyncio
 async def test_resolver_returns_lookup_failed_when_simbad_is_unreachable(monkeypatch):
     """Core regression test for the network-vs-no-match distinction: when SIMBAD itself
     can't be reached (timeout, transport error, etc.), resolve_query() must report

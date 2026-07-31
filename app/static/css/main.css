@@ -901,7 +901,7 @@ body.viz-dragging .viz-panel__inner {
     margin-left: auto;
     margin-right: auto;
   }
-  .viz-panel {
+  body.viz-open .viz-panel {
     width: 100vw;
   }
   body.viz-open .viz-toggle {

@@ -201,6 +201,22 @@ async def object_profile(
     """Display an object profile."""
     obj = await get_object_by_simbad_id(simbad_main_id)
     if obj is None:
+        subject_type = "resolve_user" if current_user is not None else "resolve_session"
+        subject_id = str(current_user.id) if current_user is not None else get_session_id(request)
+        try:
+            await check_limit(subject_type, subject_id, limit=RESOLVE_RATE_LIMIT, window=RESOLVE_RATE_LIMIT_WINDOW)
+        except RateLimitExceededError as exc:
+            template = env.get_template("index.html")
+            html = template.render(
+                request=request,
+                current_user=current_user,
+                error=(
+                    "You've made too many searches recently. "
+                    f"Please try again in about {exc.retry_after_seconds} seconds."
+                ),
+            )
+            return HTMLResponse(content=html, status_code=429)
+        await record_usage(subject_type, subject_id)
         obj = await get_or_resolve(simbad_main_id, generate_ai_summary=False)
     favorited = False
     if current_user is not None and obj.id is not None:

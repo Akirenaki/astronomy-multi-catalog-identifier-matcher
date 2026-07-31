@@ -6,6 +6,8 @@ import os
 
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///./astronomy_test_cache.db")
 
+from unittest.mock import AsyncMock
+
 import pytest_asyncio
 from fastapi.testclient import TestClient
 
@@ -29,3 +31,28 @@ def test_homepage_does_not_contain_stale_cross_matcher_branding():
     assert "Cross-Matcher" not in response.text
     assert "Identifier-Matcher" in response.text
     assert "astronomy-multi-catalog-cross-matcher" not in response.text
+
+
+def test_object_page_does_not_contain_stale_crossmatcher_localstorage_key(monkeypatch):
+    """Regression test for Finding F4: the coordinate-viz panel's
+    localStorage key must not still spell out the pre-rename project name."""
+
+    async def fake_resolve_identity(*args, **kwargs):
+        return {
+            "main_id": "* alf Ori",
+            "ra": 88.79,
+            "dec": 7.41,
+            "otype": "Star",
+            "sp_type": "M1-M2Ia-Iab",
+            "aliases": ["Betelgeuse"],
+        }
+
+    monkeypatch.setattr("app.resolver.resolve_identity", fake_resolve_identity)
+    monkeypatch.setattr("app.resolver.find_planets", AsyncMock(return_value=([], None, False)))
+    monkeypatch.setattr("app.cache.generate_summary", AsyncMock(return_value="a summary"))
+
+    with TestClient(app) as client:
+        response = client.get("/object/betelgeuse")
+
+    assert response.status_code == 200
+    assert "crossmatcher" not in response.text.lower()
