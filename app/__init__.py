@@ -1,1 +1,1 @@
-"""App package."""
+"""Astronomy app package."""

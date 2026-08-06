@@ -1,4 +1,4 @@
-"""Database setup."""
+"""Database engine, session, and schema helpers."""
 
 import os
 from collections.abc import AsyncGenerator
@@ -56,19 +56,19 @@ def _set_sqlite_pragma(dbapi_connection, connection_record) -> None:
 
 
 async def init_db() -> None:
-    """Create the database tables."""
+    """Create application tables for first-run and test setup."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
 
 async def reset_db() -> None:
-    """Reset the database schema."""
+    """Drop and recreate all tables for a clean database state."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
 
 
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
-    """Yield a database session."""
+    """Provide a scoped async session for request handlers and services."""
     async with SessionLocal() as session:
         yield session

@@ -278,3 +278,131 @@ async def test_unconfirmed_partial_is_overwritten_by_confirmed_no_planets():
     assert second.id == first.id
     assert second.resolution_state == "PARTIAL"
     assert second.planets_lookup_failed is False  # improvement direction still overwrites
+
+
+def _confirmed_no_planets_partial(query_text: str = "51 Peg") -> ResolutionResult:
+    return ResolutionResult(
+        query_text=query_text,
+        state="PARTIAL",
+        main_id="51 Peg",
+        ra=344.36,
+        dec=20.77,
+        otype="Star",
+        spectral_type="G2V",
+        aliases=["51 Peg", "HD 217014"],
+        planets=[],
+        planets_lookup_failed=False,
+        resolved_via=[query_text, "51 Peg"],
+    )
+
+
+@pytest.mark.asyncio
+async def test_downgrade_to_confirmed_partial_still_refreshes_expiry_for_retry():
+    """F1 (round 4): a RESOLVED->confirmed-PARTIAL downgrade (planets_lookup_failed=False)
+    must still advance expires_at to the short retry TTL, same as every other downgrade
+    path -- otherwise the row's cache entry never becomes fresh again and every future
+    request re-triggers a live SIMBAD + Exoplanet Archive lookup forever."""
+    first = await cache_mod.store_result(_resolved_result(), generate_ai_summary=False)
+    async with SessionLocal() as session:
+        row = await session.get(ObjectRecord, first.id)
+        row.expires_at = datetime.now(timezone.utc) - timedelta(hours=1)
+        await session.commit()
+
+    second = await cache_mod.store_result(_confirmed_no_planets_partial(), generate_ai_summary=False)
+
+    assert second.resolution_state == "RESOLVED"
+    assert second.expires_at > datetime.now(timezone.utc)
+    assert second.expires_at <= datetime.now(timezone.utc) + timedelta(hours=1, minutes=1)
+
+    cached = await cache_mod.get_cached("51 Peg")
+    assert cached is not None
+
+
+def _result_for_state(state: str, *, planets_lookup_failed: bool = False, query_text: str = "F1-02 Table Test") -> ResolutionResult:
+    """Build a minimal ResolutionResult for a given state, for the table-driven
+    expiry test below. Mirrors the fixtures used elsewhere in this file."""
+    if state == "RESOLVED":
+        return ResolutionResult(
+            query_text=query_text, state="RESOLVED", main_id="F1-02 Star", ra=10.0, dec=20.0,
+            otype="Star", spectral_type="G2V", aliases=["F1-02 Star"],
+            planets=[{"pl_name": "F1-02 Star b"}], resolved_via=[query_text, "F1-02 Star"],
+        )
+    if state == "PARTIAL":
+        return ResolutionResult(
+            query_text=query_text, state="PARTIAL", main_id="F1-02 Star", ra=10.0, dec=20.0,
+            otype="Star", spectral_type="G2V", aliases=["F1-02 Star"], planets=[],
+            planets_lookup_failed=planets_lookup_failed, resolved_via=[query_text, "F1-02 Star"],
+        )
+    if state == "AMBIGUOUS":
+        return ResolutionResult(
+            query_text=query_text, state="AMBIGUOUS",
+            candidates=[
+                {"main_id": "F1-02 Star", "ra": 10.0, "dec": 20.0, "otype": "Star", "sp_type": "G2V", "aliases": []},
+                {"main_id": "F1-02 Star B", "ra": 10.1, "dec": 20.1, "otype": "Star", "sp_type": "M4V", "aliases": []},
+            ],
+        )
+    if state == "UNRESOLVED":
+        return ResolutionResult(query_text=query_text, state="UNRESOLVED")
+    if state == "LOOKUP_FAILED":
+        return ResolutionResult(query_text=query_text, state="LOOKUP_FAILED")
+    raise ValueError(state)
+
+
+_ALL_STATE_CONFIGS = [
+    ("RESOLVED", False),
+    ("PARTIAL", False),
+    ("PARTIAL", True),
+    ("AMBIGUOUS", False),
+    ("UNRESOLVED", False),
+    ("LOOKUP_FAILED", False),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_config", _ALL_STATE_CONFIGS)
+@pytest.mark.parametrize("second_config", _ALL_STATE_CONFIGS)
+async def test_expiry_is_always_refreshed_to_the_future_for_downgrades_or_flagged_states(
+    first_config, second_config
+):
+    """F1-02 (round 4): table-driven regression covering every
+    (first_state, second_state, planets_lookup_failed) combination.
+
+    Whenever the second store_result() call represents a downgrade from the
+    first (per _is_downgrade()), or the second result's own state/flag
+    combination falls into the explicit short-TTL list, expires_at must end
+    up refreshed to a future value. This closes the whole bug class F1
+    belonged to, not just the single RESOLVED->confirmed-PARTIAL case F1-01's
+    test covers.
+    """
+    first_state, first_failed = first_config
+    second_state, second_failed = second_config
+    query_text = f"F1-02 Table Test {first_state}-{first_failed}->{second_state}-{second_failed}"
+
+    first = await cache_mod.store_result(
+        _result_for_state(first_state, planets_lookup_failed=first_failed, query_text=query_text),
+        generate_ai_summary=False,
+    )
+    async with SessionLocal() as session:
+        row = await session.get(ObjectRecord, first.id)
+        row.expires_at = datetime.now(timezone.utc) - timedelta(hours=1)
+        await session.commit()
+
+    is_downgrade = cache_mod._is_downgrade(second_state, second_failed, first_state, first_failed)
+    second = await cache_mod.store_result(
+        _result_for_state(second_state, planets_lookup_failed=second_failed, query_text=query_text),
+        generate_ai_summary=False,
+    )
+
+    short_ttl_state = second_state in ("UNRESOLVED", "AMBIGUOUS", "LOOKUP_FAILED") or (
+        second_state == "PARTIAL" and second_failed
+    )
+
+    if is_downgrade or short_ttl_state:
+        assert second.expires_at > datetime.now(timezone.utc), (
+            f"{first_config} -> {second_config}: expires_at was not refreshed to the future"
+        )
+    else:
+        # Genuine improvement (or equal, non-flagged state): the normal
+        # 14-day fresh_fields expiry applies, which is also always in the
+        # future relative to now.
+        assert second.expires_at > datetime.now(timezone.utc)

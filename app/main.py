@@ -1,4 +1,4 @@
-"""FastAPI app entry point."""
+"""FastAPI routes, startup wiring, and template rendering."""
 
 import json
 import logging
@@ -54,7 +54,6 @@ from app.models import User
 from app.narrative import GeminiGenerationError, GeminiRateLimitedError, render_summary_markdown
 from app.ratelimit import RateLimitExceededError, check_limit, purge_old_rate_limit_events, record_usage
 
-# Configure logging.
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -153,17 +152,15 @@ app.add_middleware(
     same_site="lax",
 )
 
-# Serve static assets.
 _APP_DIR = Path(__file__).resolve().parent
 
 app.mount("/static", StaticFiles(directory=_APP_DIR / "static"), name="static")
 
 def _tojson(value) -> Markup:
-    """Render a Python value as a JSON literal for templates."""
+    """Serialize a value for safe template embedding."""
     return Markup(json.dumps(value).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026"))
 
 
-# Load templates with HTML escaping enabled.
 env = Environment(loader=FileSystemLoader(_APP_DIR / "templates"), autoescape=select_autoescape(["html"]))
 env.filters["render_summary_markdown"] = render_summary_markdown
 env.filters["tojson"] = _tojson

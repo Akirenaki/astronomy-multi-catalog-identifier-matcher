@@ -1,4 +1,4 @@
-"""Natural-language summary generation."""
+"""Gemini-backed natural-language summary generation."""
 
 from __future__ import annotations
 
@@ -240,22 +240,50 @@ async def generate_summary(
 ) -> str:
     """Generate a plain-English summary of an astronomical object.
 
-    Always tries the app's own shared Gemini key first. If that specifically
-    comes back rate-limited/quota-exhausted (GeminiRateLimitedError) and the
-    caller has a personal_api_key configured, retries once against that key
-    -- see README section III.A for the fallback semantics (shared key first,
-    personal key only as a last resort; the resulting summary is still
-    written to the one shared ai_summary column, benefiting every future
-    visitor, not just the requesting user).
+    Always tries the app's own shared Gemini key first, *if one is
+    configured*. If the shared key specifically comes back rate-limited/
+    quota-exhausted (GeminiRateLimitedError) and the caller has a
+    personal_api_key configured, retries once against that key -- see README
+    section III.A for the fallback semantics (shared key first, personal key
+    only as a last resort; the resulting summary is still written to the one
+    shared ai_summary column, benefiting every future visitor, not just the
+    requesting user).
+
+    If the shared key isn't configured at all (client is None -- e.g. a
+    self-hoster deliberately running BYOK-only, per README §II), a supplied
+    personal_api_key is tried directly instead of always falling through to
+    "No summary available." (see F2, 2026 architectural audit round 4). This
+    only changes behaviour for that specific "no shared key" configuration;
+    the shared-key-first / rate-limit-triggered fallback above is unchanged.
     """
-    if not client or types is None:
+    if types is None:
         logger.warning(
-            "GEMINI_API_KEY is not set; skipping narrative generation. "
+            "The Gemini SDK is unavailable; skipping narrative generation. "
             "Returning default 'No summary available.' message."
         )
         return "No summary available."
 
     prompt = _build_summary_prompt(payload)
+
+    if not client:
+        if not personal_api_key:
+            logger.warning(
+                "GEMINI_API_KEY is not set and no personal key was supplied; skipping "
+                "narrative generation. Returning default 'No summary available.' message."
+            )
+            return "No summary available."
+
+        personal_client = _build_personal_client(personal_api_key)
+        if personal_client is None:
+            logger.warning(
+                "GEMINI_API_KEY is not set and the personal key could not be used to "
+                "build a client; skipping narrative generation. Returning default "
+                "'No summary available.' message."
+            )
+            return "No summary available."
+
+        logger.info("Shared Gemini key is not configured; using the requesting user's personal key.")
+        return await _call_gemini(personal_client, prompt, model=personal_model or DEFAULT_GEMINI_MODEL)
 
     try:
         return await _call_gemini(client, prompt, model=DEFAULT_GEMINI_MODEL)

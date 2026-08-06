@@ -17,7 +17,7 @@ _SIMBAD_TYPE_PREFIX_RE = re.compile(r"^(\*\*|V\*|\*)\s+")
 
 
 def _without_simbad_type_prefix(name: str) -> str | None:
-    """Remove a SIMBAD type prefix from a name."""
+    """Strip SIMBAD object-type prefixes before alias comparison."""
     stripped = _SIMBAD_TYPE_PREFIX_RE.sub("", name)
     return stripped if stripped != name else None
 
@@ -42,7 +42,7 @@ class ResolutionResult:
 
 
 async def resolve_query(query_text: str) -> ResolutionResult:
-    """Resolve a user query."""
+    """Resolve a catalog search through SIMBAD and the Exoplanet Archive."""
     resolve_started_at = time.perf_counter()
     normalized_query = normalize_query(query_text)
     simbad_started_at = time.perf_counter()

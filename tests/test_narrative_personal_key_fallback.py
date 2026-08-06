@@ -1,7 +1,9 @@
 """Tests for the personal-Gemini-key fallback in app/narrative.py::generate_summary
-(README section III.A): the app's shared key is always tried first; a caller-
-supplied personal_api_key is only used as a retry if the shared key specifically
-comes back rate-limited/quota-exhausted.
+(README section III.A): the app's shared key is always tried first, when one is
+configured; a caller-supplied personal_api_key is used as a retry if the shared
+key specifically comes back rate-limited/quota-exhausted. If no shared key is
+configured at all, a supplied personal_api_key is tried directly instead (see
+F2, round-4 architectural audit).
 """
 
 import pytest
@@ -118,3 +120,54 @@ async def test_personal_key_also_failing_surfaces_its_own_error(monkeypatch):
     assert not isinstance(excinfo.value, narrative.GeminiRateLimitedError)
     assert len(shared_models.calls) == 1
     assert len(personal_models.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_personal_key_used_directly_when_shared_client_unconfigured(monkeypatch):
+    """F2 (round 4): when GEMINI_API_KEY isn't set at all (client is None), a
+    supplied personal_api_key must be tried directly, rather than always
+    falling through to 'No summary available.' -- see README section III.A
+    and F2 in the round-4 architectural audit."""
+    monkeypatch.setattr(narrative, "client", None)
+
+    fake_models = _FakeModels(first_call_error=None, second_call_text="Personal-key-only summary.")
+    captured_personal_client_kwargs: dict = {}
+
+    def fake_genai_client(*, api_key):
+        captured_personal_client_kwargs["api_key"] = api_key
+        return _FakeClient(fake_models)
+
+    monkeypatch.setattr(narrative.genai, "Client", fake_genai_client)
+
+    result = await narrative.generate_summary(
+        {"main_id": "* alf Ori"}, personal_api_key="my-personal-key", personal_model="gemini-2.5-pro"
+    )
+
+    assert result == "Personal-key-only summary."
+    assert len(fake_models.calls) == 1
+    assert fake_models.calls[0] == "gemini-2.5-pro"
+    assert captured_personal_client_kwargs["api_key"] == "my-personal-key"
+
+
+@pytest.mark.asyncio
+async def test_no_summary_when_shared_client_unconfigured_and_no_personal_key(monkeypatch):
+    """When the shared client is unconfigured and no personal key is supplied,
+    the original safe fallback message is preserved unchanged."""
+    monkeypatch.setattr(narrative, "client", None)
+
+    result = await narrative.generate_summary({"main_id": "* alf Ori"})
+
+    assert result == "No summary available."
+
+
+@pytest.mark.asyncio
+async def test_no_summary_when_shared_client_unconfigured_and_personal_client_fails(monkeypatch):
+    """If the shared client is unconfigured and the personal key can't even
+    build a client, fail closed to the same default message rather than
+    raising."""
+    monkeypatch.setattr(narrative, "client", None)
+    monkeypatch.setattr(narrative.genai, "Client", lambda *, api_key: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    result = await narrative.generate_summary({"main_id": "* alf Ori"}, personal_api_key="my-personal-key")
+
+    assert result == "No summary available."

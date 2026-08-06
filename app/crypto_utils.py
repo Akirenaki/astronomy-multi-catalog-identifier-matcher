@@ -1,13 +1,4 @@
-"""Encryption helpers for per-user secrets (currently: personal Gemini API keys).
-
-Uses Fernet symmetric encryption (`cryptography.fernet`). The key comes from
-`USER_SECRET_ENCRYPTION_KEY` (see `app/config.py` for how `.env`/`app/.env`
-are loaded). If that variable is unset or isn't a valid Fernet key, a random
-key is generated for this process only, with a warning logged -- anything
-encrypted under it becomes unreadable the moment the process restarts. This
-mirrors the existing fallback pattern used for `SESSION_SECRET_KEY` in
-`app/main.py`.
-"""
+"""Fernet-backed helpers for per-user secret storage."""
 
 from __future__ import annotations
 

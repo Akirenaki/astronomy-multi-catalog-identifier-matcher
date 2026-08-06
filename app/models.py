@@ -1,4 +1,4 @@
-"""ORM models."""
+"""Database models for catalog objects, users, and throttling."""
 
 import json
 from datetime import datetime, timezone
@@ -91,7 +91,7 @@ class ObjectRecord(Base):
 
 
 class IdentifierRecord(Base):
-    """Stores a SIMBAD alias or identifier."""
+    """SIMBAD alias or identifier associated with a resolved object."""
     __tablename__ = "identifiers"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -105,7 +105,7 @@ class IdentifierRecord(Base):
     __table_args__ = (UniqueConstraint("object_id", "catalog", "identifier", name="uq_identifier"),)
 
     def to_dict(self) -> dict:
-        """Serialize an identifier row."""
+        """Serialize the identifier row for API and template consumers."""
         return {
             "id": self.id,
             "catalog": self.catalog,
@@ -115,7 +115,7 @@ class IdentifierRecord(Base):
 
 
 class PlanetRecord(Base):
-    """Stores planet information."""
+    """Planet metadata linked to a resolved object."""
     __tablename__ = "planets"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -130,7 +130,7 @@ class PlanetRecord(Base):
     object: Mapped[ObjectRecord] = relationship(back_populates="planets")
 
     def to_dict(self) -> dict:
-        """Serialize a planet row."""
+        """Serialize the planet row for API and template consumers."""
         return {
             "id": self.id,
             "pl_name": self.pl_name,
@@ -143,7 +143,7 @@ class PlanetRecord(Base):
 
 
 class User(Base):
-    """A registered account."""
+    """Registered account with saved searches and AI summary snapshots."""
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -166,7 +166,7 @@ class User(Base):
 
 
 class SavedSearch(Base):
-    """A saved object for a user."""
+    """User bookmark for a resolved object."""
     __tablename__ = "saved_searches"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -181,7 +181,7 @@ class SavedSearch(Base):
 
 
 class UserSummarySnapshot(Base):
-    """A saved AI summary snapshot."""
+    """Persisted copy of an AI summary for a user."""
     __tablename__ = "user_summary_snapshots"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -197,7 +197,7 @@ class UserSummarySnapshot(Base):
 
 
 class QueryAlias(Base):
-    """Maps a query string to the object it resolved to."""
+    """Historical query string mapped to its resolved object."""
     __tablename__ = "query_aliases"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -207,7 +207,7 @@ class QueryAlias(Base):
 
 
 class RateLimitEvent(Base):
-    """One logged request used for per-user or per-session rate limiting."""
+    """Single throttling event used for per-user and per-session limits."""
     __tablename__ = "rate_limit_events"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)

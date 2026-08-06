@@ -1,4 +1,4 @@
-"""Per-client rate limiting for Gemini summary generation."""
+"""Database-backed throttling for Gemini summary generation."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -103,7 +103,7 @@ async def check_and_record(
     limit: int | None = None,
     window: timedelta | None = None,
 ) -> None:
-    """Check and record in one call."""
+    """Run the quota check and usage insert back to back."""
     await check_limit(subject_type, subject_id, limit=limit, window=window)
     await record_usage(subject_type, subject_id)
 

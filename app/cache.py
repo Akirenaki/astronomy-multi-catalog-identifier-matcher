@@ -1,4 +1,4 @@
-"""Cache helpers."""
+"""Persistence helpers for resolved catalog objects and derived data."""
 from __future__ import annotations
 
 import json
@@ -62,6 +62,35 @@ def _is_downgrade(
     if new_state == "PARTIAL":
         return new_planets_lookup_failed and not previous_planets_lookup_failed
     return False
+
+
+_SHORT_CACHE_TTL = timedelta(hours=1)
+_FRESH_CACHE_TTL = timedelta(days=14)
+
+
+def _next_expiry(is_downgrade: bool, state: str, planets_lookup_failed: bool) -> timedelta:
+    """Pure helper: how far in the future the *next* expires_at should be set,
+    given the outcome of a store_result() call.
+
+    Short-lived cache entries are used for unresolved or flaky lookups, and
+    for ANY downgrade (is_downgrade=True) regardless of the specific new
+    state -- otherwise a downgrade to a state outside the explicit list below
+    (e.g. RESOLVED -> a confirmed, non-failed PARTIAL) would leave expires_at
+    untouched at its already-past value, permanently defeating the cache for
+    that row. See F1 in the 2026 architectural audit round 4.
+
+    Extracted as a standalone, database-independent function (per the round-4
+    Architecture Review) so the whole (is_downgrade, state,
+    planets_lookup_failed) combination space can be covered with a plain
+    table-driven unit test, without needing a database session at all -- see
+    test_next_expiry.py. This is a pure refactor of the logic that used to
+    live inline in store_result(); no behaviour change.
+    """
+    if is_downgrade or state in ("UNRESOLVED", "AMBIGUOUS", "LOOKUP_FAILED") or (
+        state == "PARTIAL" and planets_lookup_failed
+    ):
+        return _SHORT_CACHE_TTL
+    return _FRESH_CACHE_TTL
 
 
 class CooldownActiveError(Exception):
@@ -222,7 +251,7 @@ async def store_result(resolution_result: ResolutionResult, *, generate_ai_summa
             candidates_json=candidates_json,
             resolved_via_json=resolved_via_json,
             resolved_at=datetime.now(timezone.utc),
-            expires_at=datetime.now(timezone.utc) + timedelta(days=14),
+            expires_at=datetime.now(timezone.utc) + _FRESH_CACHE_TTL,
         )
 
         is_downgrade = False
@@ -288,11 +317,12 @@ async def store_result(resolution_result: ResolutionResult, *, generate_ai_summa
             session.add(record)
         await session.flush()
 
-        # Short-lived cache entries are useful for unresolved or flaky lookups.
-        if resolution_result.state in ("UNRESOLVED", "AMBIGUOUS", "LOOKUP_FAILED") or (
-            resolution_result.state == "PARTIAL" and resolution_result.planets_lookup_failed
-        ):
-            record.expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+        # See _next_expiry() docstring for the short-vs-fresh TTL rationale
+        # (F1, round-4 architectural audit) -- the decision logic itself now
+        # lives there as a pure, database-independent function.
+        record.expires_at = datetime.now(timezone.utc) + _next_expiry(
+            is_downgrade, resolution_result.state, resolution_result.planets_lookup_failed
+        )
 
         # Store aliases as identifier rows. Skipped on a downgrade: the
         # existing IdentifierRecord rows were deliberately left in place above,

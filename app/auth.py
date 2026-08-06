@@ -1,4 +1,4 @@
-"""Auth helpers."""
+"""Authentication, sessions, and user-specific Gemini settings."""
 from __future__ import annotations
 
 import secrets

@@ -1,16 +1,4 @@
-"""Shared environment/configuration loading.
-
-`app/database.py` needs `DATABASE_URL` (and any future config var such as
-`USER_SECRET_ENCRYPTION_KEY`) to be populated from `.env`/`app/.env` before
-it reads them via `os.getenv()` at module import time. This module provides
-that loading so `app/database.py` can call it at the very top of the file,
-before its own `os.getenv()` calls.
-
-`app/narrative.py` has its own `load_environment()` with equivalent logic
-(loaded independently, since it also needs to (re)initialise the Gemini
-client afterwards) -- `load_dotenv()` is safe to call more than once, so
-there is no conflict between the two call sites.
-"""
+"""Environment loading for import-time configuration."""
 
 from __future__ import annotations
 
