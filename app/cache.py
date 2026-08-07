@@ -77,14 +77,13 @@ def _next_expiry(is_downgrade: bool, state: str, planets_lookup_failed: bool) ->
     state -- otherwise a downgrade to a state outside the explicit list below
     (e.g. RESOLVED -> a confirmed, non-failed PARTIAL) would leave expires_at
     untouched at its already-past value, permanently defeating the cache for
-    that row. See F1 in the 2026 architectural audit round 4.
+    that row.
 
-    Extracted as a standalone, database-independent function (per the round-4
-    Architecture Review) so the whole (is_downgrade, state,
-    planets_lookup_failed) combination space can be covered with a plain
-    table-driven unit test, without needing a database session at all -- see
-    test_next_expiry.py. This is a pure refactor of the logic that used to
-    live inline in store_result(); no behaviour change.
+    Extracted as a standalone, database-independent function so the whole
+    (is_downgrade, state, planets_lookup_failed) combination space can be
+    covered with a plain table-driven unit test, without needing a database
+    session at all. This is a pure refactor of the logic that used to live
+    inline in store_result(); no behaviour change.
     """
     if is_downgrade or state in ("UNRESOLVED", "AMBIGUOUS", "LOOKUP_FAILED") or (
         state == "PARTIAL" and planets_lookup_failed
@@ -107,7 +106,7 @@ async def get_cached(query_text: str) -> ObjectRecord | None:
     # Casefold only for the cache-key lookup, not for normalize_query()'s
     # actual output or what's sent to SIMBAD -- this just avoids fragmenting
     # the cache across differently-cased spellings of the same informal name
-    # (e.g. "Betelgeuse" vs "betelgeuse"); see TICKET-07.
+    # (e.g. "Betelgeuse" vs "betelgeuse").
     key = (normalized_query or query_text).casefold()
     async with SessionLocal() as session:
         eager_opts = (selectinload(ObjectRecord.identifiers), selectinload(ObjectRecord.planets))
@@ -174,7 +173,7 @@ async def store_result(resolution_result: ResolutionResult, *, generate_ai_summa
                 # about to be deleted onto the surviving primary_row, so a
                 # user's favorite or personal summary snapshot isn't silently
                 # lost when store_result() merges two previously-separate
-                # candidate rows into one (see TICKET-E).
+                # candidate rows into one.
                 #
                 # SavedSearch and UserSummarySnapshot both carry a
                 # UniqueConstraint("user_id", "object_id"): if the same user
@@ -272,7 +271,7 @@ async def store_result(resolution_result: ResolutionResult, *, generate_ai_summa
             # what's already stored -- most commonly a transient SIMBAD/Exoplanet
             # Archive failure hitting a row whose 14-day TTL just lapsed. Without
             # this check, a routine re-resolution failure would silently destroy
-            # a previously-good, fully-resolved object (see TICKET-02 / P0-2).
+            # a previously-good, fully-resolved object.
             is_downgrade = _is_downgrade(
                 resolution_result.state,
                 resolution_result.planets_lookup_failed,
@@ -318,8 +317,8 @@ async def store_result(resolution_result: ResolutionResult, *, generate_ai_summa
         await session.flush()
 
         # See _next_expiry() docstring for the short-vs-fresh TTL rationale
-        # (F1, round-4 architectural audit) -- the decision logic itself now
-        # lives there as a pure, database-independent function.
+        # -- the decision logic itself now lives there as a pure,
+        # database-independent function.
         record.expires_at = datetime.now(timezone.utc) + _next_expiry(
             is_downgrade, resolution_result.state, resolution_result.planets_lookup_failed
         )
@@ -345,7 +344,7 @@ async def store_result(resolution_result: ResolutionResult, *, generate_ai_summa
             # itself stored as its own IdentifierRecord -- fall back to
             # flagging every persisted identifier, since they all name the
             # same RESOLVED object that main_id's match confirmed has
-            # planets. See TICKET-101.
+            # planets.
             matched_via_main_id = not direct_matches and resolution_result.matched_alias is not None and (
                 resolution_result.matched_alias == resolution_result.main_id
                 or (
@@ -623,7 +622,7 @@ async def remove_favorite(user_id: int, object_id: int) -> bool:
     (two requests racing between the SELECT and the DELETE) is still safe: whichever
     commits second simply issues a DELETE that matches zero rows, which SQLAlchemy
     treats as a normal no-op here (no version_id_col is configured on SavedSearch,
-    so there's no optimistic-concurrency check to trip). See EVALUATION.md 1.7.
+    so there's no optimistic-concurrency check to trip).
     """
     async with SessionLocal() as session:
         existing = await session.execute(
@@ -650,8 +649,7 @@ async def is_favorited(user_id: int, object_id: int) -> bool:
 async def list_favorites(user_id: int) -> list[dict]:
     """Return this user's favorited objects, newest favorite first, each paired with
     their personal summary snapshot if one exists (falling back to the shared
-    canonical ai_summary otherwise -- see GET /account/saved's docstring in
-    app/main.py for when that fallback applies)."""
+    canonical ai_summary otherwise)."""
     async with SessionLocal() as session:
         result = await session.execute(
             select(SavedSearch)

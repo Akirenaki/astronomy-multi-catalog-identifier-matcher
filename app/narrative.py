@@ -177,10 +177,10 @@ DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
 def _build_personal_client(api_key: str) -> Any | None:
     """Build a one-off Gemini client from a user's personal API key.
 
-    Used only as a fallback when the shared app key is rate-limited/quota-
-    exhausted (see generate_summary() and README section III.A). Never
-    cached/reused across requests -- a fresh client is built per fallback
-    attempt from the (decrypted, in-memory only) key.
+    Used only as a fallback when the shared app key is rate-limited or
+    quota-exhausted. Never cached or reused across requests -- a fresh
+    client is built per fallback attempt from the decrypted, in-memory-only
+    key.
     """
     if genai is None:
         return None
@@ -243,18 +243,17 @@ async def generate_summary(
     Always tries the app's own shared Gemini key first, *if one is
     configured*. If the shared key specifically comes back rate-limited/
     quota-exhausted (GeminiRateLimitedError) and the caller has a
-    personal_api_key configured, retries once against that key -- see README
-    section III.A for the fallback semantics (shared key first, personal key
-    only as a last resort; the resulting summary is still written to the one
-    shared ai_summary column, benefiting every future visitor, not just the
-    requesting user).
+    personal_api_key configured, retries once against that key. The fallback
+    keeps the shared summary flow intact: the resulting text is still written
+    to the one shared ai_summary column, benefiting every future visitor, not
+    just the requesting user.
 
     If the shared key isn't configured at all (client is None -- e.g. a
-    self-hoster deliberately running BYOK-only, per README §II), a supplied
-    personal_api_key is tried directly instead of always falling through to
-    "No summary available." (see F2, 2026 architectural audit round 4). This
-    only changes behaviour for that specific "no shared key" configuration;
-    the shared-key-first / rate-limit-triggered fallback above is unchanged.
+    self-hoster deliberately running BYOK-only), a supplied personal_api_key
+    is tried directly instead of always falling through to "No summary
+    available." This only changes behaviour for that specific "no shared key"
+    configuration; the shared-key-first / rate-limit-triggered fallback above
+    is unchanged.
     """
     if types is None:
         logger.warning(

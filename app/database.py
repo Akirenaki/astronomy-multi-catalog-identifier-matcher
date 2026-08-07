@@ -19,7 +19,7 @@ def get_connect_args(url: str) -> dict:
     project targets (Neon, Render Postgres, Supabase, ...); asyncpg does not
     enable TLS on its own. Factored out so alembic/env.py can build its own
     engine with the exact same connect_args instead of silently connecting
-    without TLS -- see F4 in the 2026-07 architectural audit.
+    without TLS.
     """
     if url.startswith("postgresql://") or url.startswith("postgres://") or url.startswith("postgresql+asyncpg://"):
         return {"ssl": "require"}

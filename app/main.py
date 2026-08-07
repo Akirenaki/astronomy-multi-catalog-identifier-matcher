@@ -108,7 +108,7 @@ async def lifespan(app: FastAPI):
                 "without Alembic."
             ) from exc
 
-    # F6: periodically purge stale rate_limit_events rows so the append-only
+    # Periodically purge stale rate_limit_events rows so the append-only
     # event log doesn't grow forever on a long-lived deployment. Runs
     # in-process rather than as a separate cron job/Render Pre-Deploy step,
     # since that feature isn't available on Render's free tier.

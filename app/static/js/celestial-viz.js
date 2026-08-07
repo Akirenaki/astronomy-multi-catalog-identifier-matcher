@@ -46,7 +46,7 @@
  * toEcliptic() for a handful of (RA, Dec, lat, LST, obliquity) combinations
  * before being wired up here.
  *
- * -- Azimuth mirror fix (2026-07) ----------------------------------------
+ * -- Azimuth mirror fix -----------------------------------------------
  * The "checked by hand" claim above turned out to only have been exercised
  * at LST=0 / meridian-crossing cases, where the bug below is numerically
  * invisible. A later audit found the 3D scene placed stars at the mirror

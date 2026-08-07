@@ -150,7 +150,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    # Personal Gemini API key fallback (see README section III.A). Stored as
+    # Personal Gemini API key fallback. Stored as
     # Fernet ciphertext, never as plaintext -- see app/crypto_utils.py. Never
     # decrypted for display; the settings UI only ever shows whether a key is
     # currently saved, not the key itself.
@@ -221,7 +221,7 @@ class RateLimitEvent(Base):
             name="ck_rate_limit_subject_type",
         ),
         # check_limit() filters by exactly (subject_type, subject_id, created_at) on
-        # every AI-summary request -- see EVALUATION.md suggestion #5. Without this,
-        # that query does a full table scan as rate_limit_events grows.
+        # every AI-summary request. Without this, that query does a full table scan
+        # as rate_limit_events grows.
         Index("ix_rate_limit_events_subject_created", "subject_type", "subject_id", "created_at"),
     )

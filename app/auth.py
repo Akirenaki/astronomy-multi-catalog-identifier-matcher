@@ -17,7 +17,7 @@ _MIN_PASSWORD_LENGTH = 8
 
 # A fixed, valid bcrypt hash with no corresponding real password. Used solely so
 # that authenticate() can run a checkpw() call of realistic cost on the
-# "no such user" path -- see authenticate()'s docstring below for why.
+# "no such user" path.
 _DUMMY_PASSWORD_HASH = bcrypt.hashpw(b"dummy-password-for-timing", bcrypt.gensalt()).decode("utf-8")
 
 
@@ -150,7 +150,7 @@ async def update_personal_gemini_settings(
     preferred_model: str | None,
     clear: bool = False,
 ) -> None:
-    """Update a user's personal-Gemini-key fallback settings (see README III.A).
+    """Update a user's personal-Gemini-key fallback settings.
 
     - `clear=True` removes both the stored key and the preferred model,
       regardless of what else is passed.
