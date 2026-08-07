@@ -116,6 +116,18 @@ def test_overlong_key_is_rejected_with_400():
     assert "No personal key saved." in response.text  # nothing was written
 
 
+def test_overlong_preferred_model_is_rejected_with_400():
+    with TestClient(app) as client:
+        csrf_token = _register(client)
+        response = client.post(
+            "/account/settings",
+            data={"csrf_token": csrf_token, "preferred_model": "x" * 500},
+        )
+
+    assert response.status_code == 400
+    assert "No personal key saved." in response.text  # nothing was written
+
+
 def test_missing_csrf_token_is_rejected():
     with TestClient(app) as client:
         _register(client)

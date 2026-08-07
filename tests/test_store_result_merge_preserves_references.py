@@ -167,3 +167,49 @@ async def test_merge_with_duplicate_favorite_on_both_rows_does_not_raise():
     # No duplicate: exactly one SavedSearch remains, pointing at the surviving row.
     assert len(saved) == 1
     assert saved[0].object_id == record.id
+
+
+@pytest.mark.asyncio
+async def test_merge_preserves_stale_rows_ai_summary_when_primary_has_none():
+    """The stale row's ai_summary/ai_summary_generated_at must survive the
+    merge onto primary_row when primary_row didn't already have its own."""
+    query_text_row_id, main_id_row_id = await _make_colliding_rows()
+    generated_at = datetime.now(timezone.utc) - timedelta(hours=2)
+
+    async with SessionLocal() as session:
+        row = await session.get(ObjectRecord, main_id_row_id)
+        row.ai_summary = "A previously generated, valuable narrative."
+        row.ai_summary_generated_at = generated_at
+        await session.commit()
+
+    record = await cache_mod.store_result(_resolution_result(), generate_ai_summary=False)
+
+    assert record.ai_summary == "A previously generated, valuable narrative."
+    assert record.ai_summary_generated_at is not None
+
+
+@pytest.mark.asyncio
+async def test_merge_does_not_overwrite_primary_rows_own_ai_summary_with_stale_rows():
+    """If primary_row already has its own ai_summary, the merge must not
+    clobber it with the stale row's -- rescuing lost data is fine, arbitrating
+    between two live summaries is out of scope."""
+    query_text_row_id, main_id_row_id = await _make_colliding_rows()
+    generated_at = datetime.now(timezone.utc) - timedelta(hours=2)
+
+    async with SessionLocal() as session:
+        primary = await session.get(ObjectRecord, query_text_row_id)
+        # Match the incoming resolution's state so the unrelated "clear
+        # ai_summary if state/planets changed" invalidation doesn't fire for
+        # reasons unrelated to what this test is checking.
+        primary.resolution_state = "RESOLVED"
+        primary.ai_summary = "Primary row's own summary."
+        primary.ai_summary_generated_at = generated_at
+
+        stale = await session.get(ObjectRecord, main_id_row_id)
+        stale.ai_summary = "Stale row's summary."
+        stale.ai_summary_generated_at = generated_at
+        await session.commit()
+
+    record = await cache_mod.store_result(_resolution_result(), generate_ai_summary=False)
+
+    assert record.ai_summary == "Primary row's own summary."

@@ -167,6 +167,17 @@ async def store_result(resolution_result: ResolutionResult, *, generate_ai_summa
         stale_rows = candidate_rows[1:]
         old_query_texts = {r.query_text for r in candidate_rows}
 
+        # When a stale row's ai_summary is rescued onto primary_row below,
+        # the summary describes *that* row's previously-resolved state/planet
+        # set, not primary_row's own (possibly quite different, e.g.
+        # UNRESOLVED) prior state. Track the state/planets the surviving
+        # ai_summary actually describes so the "clear ai_summary if
+        # state/planets changed" check further down compares against the
+        # right baseline instead of always invalidating a just-rescued
+        # summary.
+        rescued_summary_state: str | None = None
+        rescued_summary_planet_names: set[str] | None = None
+
         for stale_row in stale_rows:
             if primary_row is not None:
                 # Re-point favorites/snapshots/aliases that reference the row
@@ -225,6 +236,25 @@ async def store_result(resolution_result: ResolutionResult, *, generate_ai_summa
                     update(QueryAlias).where(QueryAlias.object_id == stale_row.id).values(object_id=primary_row.id)
                 )
                 await session.flush()
+
+                # Rescue a stale row's ai_summary before it's deleted below.
+                # store_result() otherwise re-points every other kind of
+                # stale-row state (favorites, snapshots, aliases) onto
+                # primary_row but silently drops ai_summary, permanently
+                # losing a previously-generated (Gemini-quota-costing)
+                # narrative whenever primary_row didn't already have its
+                # own. Only rescue into an empty slot -- never overwrite a
+                # live summary already on primary_row -- and only from the
+                # first stale row that has one, so multiple stale rows don't
+                # get merged together.
+                if not primary_row.ai_summary and stale_row.ai_summary:
+                    primary_row.ai_summary = stale_row.ai_summary
+                    primary_row.ai_summary_generated_at = stale_row.ai_summary_generated_at
+                    rescued_summary_state = stale_row.resolution_state
+                    stale_planet_names_result = await session.execute(
+                        select(PlanetRecord.pl_name).where(PlanetRecord.object_id == stale_row.id)
+                    )
+                    rescued_summary_planet_names = set(stale_planet_names_result.scalars().all())
 
             await session.delete(stale_row)
         if stale_rows:
@@ -304,8 +334,17 @@ async def store_result(resolution_result: ResolutionResult, *, generate_ai_summa
                 # describe stale data, so clear it and let the UI fall back to
                 # "Generate AI summary".
                 new_planet_names = {p.get("pl_name", "") for p in resolution_result.planets}
+                # If this ai_summary was just rescued from a stale row (see
+                # above), compare against the state/planets *that summary*
+                # describes, not primary_row's own pre-merge history.
+                baseline_state = rescued_summary_state if rescued_summary_state is not None else previous_state
+                baseline_planet_names = (
+                    rescued_summary_planet_names
+                    if rescued_summary_planet_names is not None
+                    else previous_planet_names
+                )
                 if record.ai_summary is not None and (
-                    previous_state != resolution_result.state or previous_planet_names != new_planet_names
+                    baseline_state != resolution_result.state or baseline_planet_names != new_planet_names
                 ):
                     record.ai_summary = None
                     record.ai_summary_generated_at = None

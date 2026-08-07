@@ -141,6 +141,7 @@ def verify_csrf_token(request: Request, submitted_token: str | None) -> bool:
 
 
 _MAX_PERSONAL_API_KEY_LENGTH = 200
+_MAX_PREFERRED_MODEL_LENGTH = 100
 
 
 async def update_personal_gemini_settings(
@@ -163,6 +164,9 @@ async def update_personal_gemini_settings(
     """
     if api_key and len(api_key) > _MAX_PERSONAL_API_KEY_LENGTH:
         raise ValueError("That doesn't look like a valid API key (too long).")
+
+    if preferred_model and len(preferred_model) > _MAX_PREFERRED_MODEL_LENGTH:
+        raise ValueError("That doesn't look like a valid model name (too long).")
 
     async with SessionLocal() as session:
         user = await session.get(User, user_id)
