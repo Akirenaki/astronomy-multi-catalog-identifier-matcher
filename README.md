@@ -90,6 +90,8 @@ No feature requiring scientific correctness is behind a login wall; search, cros
    pip install -r requirements.txt
 ```
 
+**Running the test suite** (optional, for contributors): `pytest -q` covers the resolver, cache, rate-limiting, and route logic without any extra setup. Two tests exercise the 3D-visualisation JS directly through a real Node process and are skipped automatically unless Node and its dependencies are available; to include them, run `npm ci` first (see `package.json` — this is a dev-only dependency, not required to run the app itself).
+
 2. **Create a `.env` file** in `app/` (a repo-root `.env` also works for `GEMINI_API_KEY`/`SESSION_SECRET_KEY` specifically, but `app/.env` is the one that reliably works for everything below; see the caveat under `DATABASE_URL`/`USER_SECRET_ENCRYPTION_KEY`):
 
    | Variable | Required? | Purpose |
@@ -129,7 +131,7 @@ This is what actually happens between a search request and a rendered result; th
 2. **Check the cache** — first an exact match on the normalized query string, then a fallback through the `query_aliases` table (so a different alias for an already-cached object, or the object's own canonical SIMBAD ID, still hits the cache instead of re-querying). A hit here skips everything below and serves immediately.
 3. **[Resolve](#a-what-does-resolve-mean)** identity against SIMBAD via a TAP/ADQL query: canonical name, coordinates, spectral type, and every known alias, in one round trip.
 4. **Expand aliases** (adding stripped catalog-prefix variants) to maximize the next step's hit rate.
-5. **Perform identifier-based cross-matching** by querying the NASA Exoplanet Archive in a single batched query to find any known orbiting planets.
+5. **Perform identifier-based cross-matching** by querying the NASA Exoplanet Archive in one or more batched queries (aliases are chunked in groups of 40) to find any known orbiting planets.
 6. **Classify** the result into one of [five explicit states](#b-what-are-the-five-states)—`RESOLVED`, `PARTIAL`, `AMBIGUOUS`, `UNRESOLVED`, `LOOKUP_FAILED`—rather than quietly picking one answer or silently failing. A `PARTIAL` result is further flagged if the "no planets" conclusion is itself unconfirmed (the Exoplanet Archive lookup failed, rather than a genuine zero-match).
 7. **Cache** the result: 14-day TTL for a confirmed result, 1 hour for anything unconfirmed or failed (`UNRESOLVED`/`AMBIGUOUS`/`LOOKUP_FAILED`, or a `PARTIAL` with an unconfirmed planet count), so failures self-heal quickly instead of sitting wrong for two weeks.
 8. **Render** the result page with the scientific data only. AI generation is deliberately *not* part of this synchronous path for the HTML `/search` flow; it only runs when the user explicitly clicks Generate (see III.A/III.B), so a slow Gemini call (observed up to ~42s for a single heavily-catalogued star) never blocks the page it's summarising. **`GET /api/resolve?q=...` behaves the same way**: it deliberately does *not* generate an AI summary inline either, for the same reasons; a Gemini call at this point would be a second, independent call site that bypasses the AI-summary rate limiter and can't forward a personal API key, and a Gemini failure there would otherwise crash the route and roll back an already-successful catalog resolution. Regardless of entry point, a summary for a given object is fetched via the separate, rate-limited `POST /object/{id}/summary` route.
@@ -329,14 +331,14 @@ An event log of rate-limited actions, used to enforce per-client rate limits via
 | Column Name | Data Type | Nullable? | Constraints / Notes |
 | :--- | :--- | :--- | :--- |
 | **id** | INTEGER | No | PRIMARY KEY |
-| **subject_type** | VARCHAR | No | CHECK (`user`, `session`, `resolve_user`, `resolve_session`) |
+| **subject_type** | VARCHAR | No | CHECK (`user`, `session`, `resolve_user`, `resolve_session`, `auth`) |
 | **subject_id** | VARCHAR | No | |
 | **created_at** | DATETIME | No | |
 
 #### Detailed Column Explanations for `rate_limit_events`
 
 - **`id`**: Internal unique identifier for the log entry.
-- **`subject_type`**: One of four values, backing two independent limiter tiers. `user`/`session` gate AI-summary generation (Generate/Regenerate clicks) — `user` for a logged-in request (limited per `users.id`), `session` for an anonymous request (limited per the Starlette session-cookie id, assigned to every visitor regardless of login state). `resolve_user`/`resolve_session` gate catalog lookups themselves (`/search` and `/api/resolve`) via a separate, higher-ceiling limiter (`RESOLVE_RATE_LIMIT`, 60/hour) that protects outbound SIMBAD/Exoplanet Archive traffic rather than Gemini spend.
+- **`subject_type`**: One of five values, backing three independent limiter tiers. `user`/`session` gate AI-summary generation ... `resolve_user`/`resolve_session` gate catalog lookups themselves ... `auth` gates `/login` and `/register` (10 attempts per 15 minutes per session, counting only failed login attempts), protecting against credential-stuffing/brute-force separately from both of the above.`resolve_user`/`resolve_session` gate catalog lookups themselves (`/search` and `/api/resolve`) via a separate, higher-ceiling limiter (`RESOLVE_RATE_LIMIT`, 60/hour) that protects outbound SIMBAD/Exoplanet Archive traffic rather than Gemini spend.
 - **`subject_id`**: The `users.id` or session id this event counts against, as a string — not a foreign key to `users.id`, since one column needs to hold both kinds of identifier uniformly, and log rows should survive a user account being deleted rather than needing `ON DELETE` handling on what's really just an audit trail.
 - **`created_at`**: When the request was made — each tier's own sliding window is computed by counting rows newer than `now - <that tier's window>` for the same `(subject_type, subject_id)` pair.
 
@@ -504,7 +506,9 @@ They stop different failure modes:
 
 Both checks run on every Generate/Regenerate request; either can reject it independently.
 
-There's also a third, independent limiter that this FAQ entry doesn't cover above: a 60/hour `resolve_user`/`resolve_session` limit on `/search` and `/api/resolve` themselves (see [Section VI.7](#7-the-rate_limit_events-table)). It protects outbound SIMBAD/Exoplanet Archive traffic — a different resource than Gemini spend — so it's tracked separately from the two AI-summary limits described above.
+There's also a third, independent limiter that this FAQ entry doesn't cover above: a 60/hour `resolve_user`/`resolve_session` limit on `/search` and `/api/resolve` themselves (see [Section VI.7](#7-the-rate_limit_events-table)). It protects outbound SIMBAD/Exoplanet Archive traffic — a different resource than Gemini spend; so it's tracked separately from the two AI-summary limits described above.
+
+There's also a fourth, separate limiter on `/login` and `/register`: 10 attempts per 15 minutes, tracked per anonymous session id and counting only *failed* login attempts (registration attempts all count, since there's no "don't punish success" case there). It protects against credential-stuffing/brute-force and is unrelated to both the AI-summary limits above and the resolve-endpoint limiter.
 
 </details>
 
@@ -520,6 +524,8 @@ There's also a third, independent limiter that this FAQ entry doesn't cover abov
 Every mutating route (`/register`, `/login`, `/logout`, favorite/unfavorite, and AI-summary regeneration) requires a CSRF token that must match the one minted for the visitor's own session. Form-based routes carry it as a hidden `csrf_token` field; the one JS-driven route (regenerate-summary, a `fetch()` POST with no form body) sends it as an `X-CSRF-Token` header instead, read from a `<meta name="csrf-token">` tag rendered into every page. The token itself lives in the same signed, `itsdangerous`-backed session cookie the app already uses for login state, so it can't be forged or read cross-origin; see `app.auth.get_csrf_token`/`verify_csrf_token`.
 
 There is no minimum password complexity requirement beyond an 8-character floor (`app.auth._MIN_PASSWORD_LENGTH`).
+
+There is a maximum length: passwords over 72 bytes (bcrypt's own input limit, `app.auth._MAX_PASSWORD_BYTES`) are rejected outright rather than silently truncated.
 
 </details>
 
