@@ -56,3 +56,14 @@ def test_object_page_does_not_contain_stale_crossmatcher_localstorage_key(monkey
 
     assert response.status_code == 200
     assert "crossmatcher" not in response.text.lower()
+
+
+def test_contact_and_legal_page_has_contact_information():
+    with TestClient(app) as client:
+        response = client.get("/legal")
+
+    assert response.status_code == 200
+    assert "narendramal4869@gmail.com" in response.text
+    assert "https://github.com/Akirenaki" in response.text
+    assert "https://www.linkedin.com/in/renee-astraea" in response.text
+    assert "Contact" in response.text

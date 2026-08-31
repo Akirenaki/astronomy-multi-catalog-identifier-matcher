@@ -90,7 +90,7 @@ No feature requiring scientific correctness is behind a login wall; search, cros
    pip install -r requirements.txt
 ```
 
-**Running the test suite** (optional, for contributors): `pytest -q` covers the resolver, cache, rate-limiting, and route logic without any extra setup. Two tests exercise the 3D-visualisation JS directly through a real Node process and are skipped automatically unless Node and its dependencies are available; to include them, run `npm ci` first (see `package.json` — this is a dev-only dependency, not required to run the app itself).
+**Running the test suite** (optional, for contributors): `pytest -q` covers the resolver, cache, rate-limiting, and route logic without any extra setup. Two tests exercise the 3D-visualisation JS directly through a real Node process. They require Node to be installed and available on `PATH`; if Node is absent, collection can fail on Windows because the optional detection in those tests is Unix-oriented rather than cross-platform. To include them, install Node and run `npm ci` first (see `package.json` — this is a dev-only dependency, not required to run the app itself).
 
 2. **Create a `.env` file** in `app/` (a repo-root `.env` also works for `GEMINI_API_KEY`/`SESSION_SECRET_KEY` specifically, but `app/.env` is the one that reliably works for everything below; see the caveat under `DATABASE_URL`/`USER_SECRET_ENCRYPTION_KEY`):
 

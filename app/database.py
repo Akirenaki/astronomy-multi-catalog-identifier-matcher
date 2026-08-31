@@ -1,6 +1,7 @@
 """Database engine, session, and schema helpers."""
 
 import os
+import sys
 from collections.abc import AsyncGenerator
 
 from sqlalchemy import event
@@ -11,6 +12,16 @@ from app.config import load_environment
 from app.models import Base
 
 load_environment()
+
+# Pytest intentionally uses a disposable SQLite database for isolation. When the
+# developer environment has a live Postgres DATABASE_URL in the shell or root
+# .env, we must still force SQLite in the test runner because the asyncpg event
+# loop semantics are different and the suite is not meant to depend on a remote
+# database. The check relies on pytest already being imported, which is true at
+# import time during test collection.
+if "pytest" in sys.modules and os.environ.get("DATABASE_URL", "").startswith("postgresql"):
+    os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///./astronomy_test_cache.db"
+
 
 def get_connect_args(url: str) -> dict:
     """Return the connect_args this app uses for a given database URL.

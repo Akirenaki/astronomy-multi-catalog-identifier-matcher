@@ -416,6 +416,14 @@ async def history(request: Request, current_user: User | None = Depends(get_curr
     return HTMLResponse(content=html)
 
 
+@app.get("/legal", response_class=HTMLResponse)
+async def legal_page(request: Request, current_user: User | None = Depends(get_current_user)) -> HTMLResponse:
+    """Render a public contact and support page."""
+    template = env.get_template("legal.html")
+    html = template.render(request=request, current_user=current_user)
+    return HTMLResponse(content=html)
+
+
 def _safe_next_path(next_path: str | None) -> str:
     """Validate a redirect target."""
     if not next_path:
