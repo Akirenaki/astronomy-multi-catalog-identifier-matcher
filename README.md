@@ -4,9 +4,9 @@
 
 1. [Short Description](#i-short-description)
 2. [Tech Stack & Hosting](#ii-tech-stack--hosting)
-3. [User Workflow](#iii-user-workflow)
-4. [Application Processing Pipeline](#iv-application-processing-pipeline)
-5. [Result Examples](#v-result-examples)
+3. [Repository Structure](#iii-repository-structure)
+4. [User Workflow](#iv-user-workflow)
+5. [Application Processing Pipeline](#v-application-processing-pipeline)
 6. [Database Schema](#vi-database-schema)
 7. [FAQ](#vii-faq)
 8. [Third-Party Data, Services & Legal Notes](#viii-third-party-data-services--legal-notes)
@@ -25,7 +25,7 @@ The deterministic resolution and matching engine and the narrative layer are kep
 
 Each result page also offers an optional 3D coordinate-system visualisation panel, showing the resolved object's position across the horizontal, equatorial, and ecliptic systems, with adjustable observer latitude, local sidereal time, and axial obliquity. Like the AI narrative layer, this panel is illustrative only; it renders the same scientific data returned by the resolution pipeline and cannot feed back into or alter it.
 
-The resolver, cross-matcher, 3D coordinate-system visualisation panel, and AI narrative are fully usable anonymously. An optional account layer sits on top for anyone who wants to save objects and keep a personal copy of the AI narratives they generate. See [Section IV](#iv-application-processing-pipeline).
+The resolver, cross-matcher, 3D coordinate-system visualisation panel, and AI narrative are fully usable anonymously. An optional account layer sits on top for anyone who wants to save objects and keep a personal copy of the AI narratives they generate. See [Section IV](#iv-user-workflow).
 
 ---
 
@@ -57,7 +57,58 @@ The resolver, cross-matcher, 3D coordinate-system visualisation panel, and AI na
 
 ---
 
-## **III. User Workflow**
+## **III. Repository Structure**
+
+The repository is a server-rendered FastAPI application. The main runtime code lives in `app/`; templates and browser assets are kept alongside it, while Alembic owns database schema changes and `tests/` contains the automated checks.
+
+```text
+app/
+   main.py                         FastAPI app, routes, startup, and lifespan
+   auth.py                         session auth and CSRF helpers
+   cache.py                        cached resolution/result persistence
+   config.py                       environment and application settings
+   crypto_utils.py                 encryption helpers for personal API keys
+   database.py                     async SQLAlchemy engine and sessions
+   models.py                       SQLAlchemy models and schema definitions
+   narrative.py                    Gemini summary generation and rendering
+   ratelimit.py                    sliding-window rate limiting
+   resolver.py                     SIMBAD resolution and archive cross-matching
+   catalogs/
+      simbad.py                     SIMBAD TAP client
+      exoplanet_archive.py          NASA Exoplanet Archive TAP client
+   templates/                      Jinja2 pages and shared macros
+      base.html                     shared page shell
+      index.html                    search page
+      result.html                   resolution result and summary controls
+      history.html                  global recent-resolution history
+      account_saved.html            saved objects and personal summaries
+      account_settings.html         personal Gemini key and model settings
+      login.html, register.html     account forms
+      legal.html                    legal and data-use information
+   static/
+      css/main.css                  application styles
+      js/space-bg.js                NASA image background
+      js/celestial-viz.js           coordinate-system visualization
+
+alembic/
+   env.py                          migration environment
+   versions/                       committed schema migrations
+alembic.ini                       Alembic configuration
+reset_db.py                       destructive local-development reset
+
+tests/                            resolver, cache, auth, routes, and frontend-logic tests
+.github/workflows/ci.yml          continuous-integration workflow
+requirements.txt                 Python runtime and test dependencies
+package.json                      Node metadata for JavaScript tests
+package-lock.json                 locked Node dependency versions
+.env.example                      example local environment configuration
+README.md                         project documentation and operating notes
+```
+
+The local `astronomy.db`/`astronomy_test_cache.db`, virtual environments, Python caches, and other generated files are development artifacts and are not part of the application source layout.
+---
+
+## **IV. User Workflow**
 
 Every core feature works fully anonymously. Logging in adds personalization on top; nothing is gated behind an account except the things listed in III.A below.
 
@@ -121,27 +172,7 @@ No feature requiring scientific correctness is behind a login wall; search, cros
 
 See [Section II](#ii-tech-stack--hosting) for what "deployed" (vs. local dev) looks like — this section is specifically about getting it running on your own machine.
 
----
-
-## **IV. Application Processing Pipeline**
-
-This is what actually happens between a search request and a rendered result; the backend counterpart to Section III. None of these steps are directly visible in the UI as separate moments; they either happen inside a single page load or inside a single background fetch.
-
-1. **Normalise** the query (fix whitespace/casing, canonicalise catalog prefixes like HD/HIP/GJ/TYC without stripping them).
-2. **Check the cache** — first an exact match on the normalized query string, then a fallback through the `query_aliases` table (so a different alias for an already-cached object, or the object's own canonical SIMBAD ID, still hits the cache instead of re-querying). A hit here skips everything below and serves immediately.
-3. **[Resolve](#a-what-does-resolve-mean)** identity against SIMBAD via a TAP/ADQL query: canonical name, coordinates, spectral type, and every known alias, in one round trip.
-4. **Expand aliases** (adding stripped catalog-prefix variants) to maximize the next step's hit rate.
-5. **Perform identifier-based cross-matching** by querying the NASA Exoplanet Archive in one or more batched queries (aliases are chunked in groups of 40) to find any known orbiting planets.
-6. **Classify** the result into one of [five explicit states](#b-what-are-the-five-states)—`RESOLVED`, `PARTIAL`, `AMBIGUOUS`, `UNRESOLVED`, `LOOKUP_FAILED`—rather than quietly picking one answer or silently failing. A `PARTIAL` result is further flagged if the "no planets" conclusion is itself unconfirmed (the Exoplanet Archive lookup failed, rather than a genuine zero-match).
-7. **Cache** the result: 14-day TTL for a confirmed result, 1 hour for anything unconfirmed or failed (`UNRESOLVED`/`AMBIGUOUS`/`LOOKUP_FAILED`, or a `PARTIAL` with an unconfirmed planet count), so failures self-heal quickly instead of sitting wrong for two weeks.
-8. **Render** the result page with the scientific data only. AI generation is deliberately *not* part of this synchronous path for the HTML `/search` flow; it only runs when the user explicitly clicks Generate (see III.A/III.B), so a slow Gemini call (observed up to ~42s for a single heavily-catalogued star) never blocks the page it's summarising. **`GET /api/resolve?q=...` behaves the same way**: it deliberately does *not* generate an AI summary inline either, for the same reasons; a Gemini call at this point would be a second, independent call site that bypasses the AI-summary rate limiter and can't forward a personal API key, and a Gemini failure there would otherwise crash the route and roll back an already-successful catalog resolution. Regardless of entry point, a summary for a given object is fetched via the separate, rate-limited `POST /object/{id}/summary` route.
-9. **On a Generate/Regenerate request**, call Gemini using the app's own shared key; if that's specifically rate-limited and the requesting user has a personal key configured, retry once with theirs (see III.A). Whichever key succeeds, persist the result as the one shared `ai_summary` for that object, kept strictly separate from the scientific data so the AI layer can never corrupt or override what the SQL layer already established.
-
-Programmatic access to steps 1–7 (without the templated HTML) is available via `GET /api/resolve?q=...`, returning the same resolution data as JSON — see step 8's note confirming this route also omits the AI summary, matching the HTML flow.
-
----
-
-## **V. Result examples**
+### D. Result examples
 
 | Search | Expected state | Why |
 | --- | --- | --- |
@@ -156,7 +187,24 @@ Programmatic access to steps 1–7 (without the templated HTML) is available via
 | `"asdfjkl"` | UNRESOLVED | Gibberish |
 | `"HD 217014"` (SIMBAD unreachable because of network timeout, firewalled host, etc.) | LOOKUP_FAILED | SIMBAD was never actually reached, so this is not a real "no match" |
 
+
 ---
+
+## **V. Application Processing Pipeline**
+
+This is what actually happens between a search request and a rendered result; the backend counterpart to Section IV. None of these steps are directly visible in the UI as separate moments; they either happen inside a single page load or inside a single background fetch.
+
+1. **Normalise** the query (fix whitespace/casing, canonicalise catalog prefixes like HD/HIP/GJ/TYC without stripping them).
+2. **Check the cache** — first an exact match on the normalized query string, then a fallback through the `query_aliases` table (so a different alias for an already-cached object, or the object's own canonical SIMBAD ID, still hits the cache instead of re-querying). A hit here skips everything below and serves immediately.
+3. **[Resolve](#a-what-does-resolve-mean)** identity against SIMBAD via a TAP/ADQL query: canonical name, coordinates, spectral type, and every known alias, in one round trip.
+4. **Expand aliases** (adding stripped catalog-prefix variants) to maximize the next step's hit rate.
+5. **Perform identifier-based cross-matching** by querying the NASA Exoplanet Archive in one or more batched queries (aliases are chunked in groups of 40) to find any known orbiting planets.
+6. **Classify** the result into one of [five explicit states](#b-what-are-the-five-states)—`RESOLVED`, `PARTIAL`, `AMBIGUOUS`, `UNRESOLVED`, `LOOKUP_FAILED`—rather than quietly picking one answer or silently failing. A `PARTIAL` result is further flagged if the "no planets" conclusion is itself unconfirmed (the Exoplanet Archive lookup failed, rather than a genuine zero-match).
+7. **Cache** the result: 14-day TTL for a confirmed result, 1 hour for anything unconfirmed or failed (`UNRESOLVED`/`AMBIGUOUS`/`LOOKUP_FAILED`, or a `PARTIAL` with an unconfirmed planet count), so failures self-heal quickly instead of sitting wrong for two weeks.
+8. **Render** the result page with the scientific data only. AI generation is deliberately *not* part of this synchronous path for the HTML `/search` flow; it only runs when the user explicitly clicks Generate (see III.A/III.B), so a slow Gemini call (observed up to ~42s for a single heavily-catalogued star) never blocks the page it's summarising. **`GET /api/resolve?q=...` behaves the same way**: it deliberately does *not* generate an AI summary inline either, for the same reasons; a Gemini call at this point would be a second, independent call site that bypasses the AI-summary rate limiter and can't forward a personal API key, and a Gemini failure there would otherwise crash the route and roll back an already-successful catalog resolution. Regardless of entry point, a summary for a given object is fetched via the separate, rate-limited `POST /object/{id}/summary` route.
+9. **On a Generate/Regenerate request**, call Gemini using the app's own shared key; if that's specifically rate-limited and the requesting user has a personal key configured, retry once with theirs (see III.A). Whichever key succeeds, persist the result as the one shared `ai_summary` for that object, kept strictly separate from the scientific data so the AI layer can never corrupt or override what the SQL layer already established.
+
+Programmatic access to steps 1–7 (without the templated HTML) is available via `GET /api/resolve?q=...`, returning the same resolution data as JSON — see step 8's note confirming this route also omits the AI summary, matching the HTML flow.
 
 ## **VI. Database Schema**
 
@@ -557,7 +605,7 @@ _raw_database_url = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./astronomy.d
 
 This project depends on a few external data sources and APIs. **None of this project's own code or content is a substitute for reading each service's actual current terms** — this section is a summary, not a legal opinion, and the app itself is a student/portfolio project, not a commercial product.
 
-- **SIMBAD (Strasbourg Astronomical Data Center / CDS).** SIMBAD is the source of the primary object-resolution step (see [Section III](#iii-user-workflow)). SIMBAD data is queried live via its public TAP service and cached temporarily (14-day TTL) purely to avoid re-querying the same object repeatedly; nothing is redistributed as a dataset. If you reuse this project or publish derived results, include SIMBAD attribution/citation as required by [CDS's current data-use guidance](https://cds.unistra.fr/), which generally asks that published work using SIMBAD data acknowledge the CDS.
+- **SIMBAD (Strasbourg Astronomical Data Center / CDS).** SIMBAD is the source of the primary object-resolution step (see [Section IV](#iv-user-workflow)). SIMBAD data is queried live via its public TAP service and cached temporarily (14-day TTL) purely to avoid re-querying the same object repeatedly; nothing is redistributed as a dataset. If you reuse this project or publish derived results, include SIMBAD attribution/citation as required by [CDS's current data-use guidance](https://cds.unistra.fr/), which generally asks that published work using SIMBAD data acknowledge the CDS.
 - **NASA Exoplanet Archive.** Exoplanet cross-match data (orbital period, radius, discovery method/year) comes from NASA's public Exoplanet Archive TAP service, queried live and cached the same way as SIMBAD data. If you reuse this project's catalog output or publish derived results, follow the [Exoplanet Archive's citation guidance](https://exoplanetarchive.ipac.caltech.edu/docs/acknowledge.html).
 - **NASA Image and Video Library (background imagery).** The animated space background pulls images from NASA's public Image and Video Library. NASA media is, with some exceptions (e.g. work by contractors, or content that credits a non-NASA source), generally not copyrighted and free to use, but individual images can carry their own credit line or exception — the app shows an on-page credit for the image currently loaded for exactly this reason. Anyone reusing an image outside this project should check that image's own listing on [images.nasa.gov](https://images.nasa.gov/) and follow NASA's [current media usage guidelines](https://www.nasa.gov/nasa-brand-center/images-and-media/), rather than assuming this project's credit line is a complete rights clearance.
 - **Google Gemini API.** AI-generated summaries are produced through Google's Gemini API on its free tier. Any use of that feature — by this deployment or by anyone running their own copy of this project — is subject to Google's current [Gemini API terms of service](https://ai.google.dev/gemini-api/terms) and related usage policies. AI-generated text is clearly presented as a generated summary, not as an independent authoritative source, and it is deliberately kept unable to alter or override the underlying SIMBAD/NASA scientific data (see the architectural principle in [Section I](#i-short-description)).
