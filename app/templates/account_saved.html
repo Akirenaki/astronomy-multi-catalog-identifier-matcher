@@ -33,7 +33,7 @@
                 <div class="ai-summary-content">{{ summary_text | render_summary_markdown }}</div>
                 <p class="ai-panel__disclaimer mb-0 mt-3">
                   {% if entry.used_fallback_summary %}
-                    Showing the shared summary — you haven't generated your own for this object.
+                    Showing the shared summary; you haven't generated your own for this object.
                   {% else %}
                     Showing your personal summary from when you generated it.
                   {% endif %}

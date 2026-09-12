@@ -7,14 +7,14 @@
 
     <p class="text-sm text-secondary">
       This is a <strong>fallback only</strong>. Every AI summary request still tries the
-      app's own shared Gemini key first &mdash; your key is used only if that specifically
+      app's own shared Gemini key first; your key is used only if that specifically
       comes back rate-limited or over quota. Because AI summaries are shared between all
       visitors for a given object, generating one with your key unblocks it for everyone
       who looks up that object next, not just you.
     </p>
     <p class="text-sm text-secondary">
       Your key is encrypted before storage and is never shown back to you or anyone else
-      once saved &mdash; this page only shows whether a key is currently on file.
+      once saved; this page only shows whether a key is currently on file.
     </p>
 
     {% if message %}<p class="success-text">{{ message }}</p>{% endif %}

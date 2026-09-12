@@ -70,12 +70,12 @@
       {% elif object.resolution_state == 'PARTIAL' %}
         {% call state_banner('PARTIAL', 'Matched, with gaps') %}
           {% if object.planets_lookup_failed %}
-            <p>SIMBAD resolved this object, but the NASA Exoplanet Archive lookup itself failed &mdash;
+            <p>SIMBAD resolved this object, but the NASA Exoplanet Archive lookup itself failed. This could be due to
             a timeout, connection problem, or an unreadable response. This is <em>not</em> a confirmed
             absence of planets, unlike the usual PARTIAL case below; it will be retried automatically
             within the hour rather than cached for two weeks.</p>
           {% else %}
-            <p>SIMBAD resolved this object, but no matching entry was found in the NASA Exoplanet Archive &mdash; either it has no known planets, or the archive doesn&rsquo;t cross-reference this identifier.</p>
+            <p>SIMBAD resolved this object, but no matching entry was found in the NASA Exoplanet Archive; either it has no known planets, or the archive doesn&rsquo;t cross-reference this identifier.</p>
           {% endif %}
         {% endcall %}
       {% elif object.resolution_state == 'UNRESOLVED' %}
@@ -225,7 +225,7 @@
             <div id="ai-summary-panel" class="ai-panel" data-simbad-id="{{ object.simbad_main_id }}">
               <div class="ai-panel__label">{{ state_icon('sparkle') }}AI-generated summary</div>
               <p class="ai-panel__disclaimer">
-                Written by Gemini from the catalog data above &mdash; a narrative aid, not an independent data source.
+                Written by Gemini from the catalog data above. This is a narrative aid, <strong>NOT</strong>  an independent data source.
               </p>
               {% if object.ai_summary %}
                 <div id="ai-summary-text" class="ai-summary-content">{{ object.ai_summary | render_summary_markdown }}</div>
