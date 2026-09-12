@@ -136,7 +136,7 @@ hr { border: none; border-top: 1px solid var(--color-border-muted); margin: var(
 
 .wordmark {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: var(--space-2);
   font-weight: 700;
   font-size: 1rem;
@@ -145,7 +145,13 @@ hr { border: none; border-top: 1px solid var(--color-border-muted); margin: var(
 
 .wordmark__mark {
   display: inline-flex;
-  color: var(--color-accent);
+  align-items: center;
+}
+
+.wordmark__mark img {
+  display: block;
+  height: 28px;
+  width: auto;
 }
 
 .wordmark__name { letter-spacing: -0.01em; }

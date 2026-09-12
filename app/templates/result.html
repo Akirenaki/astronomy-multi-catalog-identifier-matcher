@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "_macros.html" import status_badge, state_banner, state_icon %}
-{% block title %}{{ (object.simbad_main_id or object.query_text) if object else 'Result' }} &middot; Identifier-Matcher{% endblock %}
+{% block title %}{{ (object.simbad_main_id or object.query_text) if object else 'Result' }} &middot; Taraka Sutra{% endblock %}
 {% block content %}
   {% if object %}
     {% if object.resolution_state == 'AMBIGUOUS' %}
