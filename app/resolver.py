@@ -41,10 +41,65 @@ class ResolutionResult:
     planets_lookup_failed: bool = False
 
 
+EASTER_EGGS: dict[str, dict[str, str]] = {
+    "amphoreus": {
+        "title": "What is the prime mover of life?",
+        "target_name": "Amphoreus",
+        "url": "https://honkai-star-rail.fandom.com/wiki/Amphoreus",
+        "link_text": "For every soul that exists in this world, there is a different 'ego,' a different 'prime mover of life.' There will never be just one answer, not even for 'love.'",
+    },
+    "amphoreus, the eternal land": {
+        "title": "What is the prime mover of life?",
+        "target_name": "Amphoreus",
+        "url": "https://honkai-star-rail.fandom.com/wiki/Amphoreus",
+        "link_text": "But when people gaze into the night sky and love what is fading with the same resolve they have to praise the stars, I want that soft, gentle pink in the sky to tell them: 'Love' will always be answered.",
+    },
+    "the eternal land, amphoreus": {
+        "title": "What is the prime mover of life?",
+        "target_name": "Amphoreus",
+        "url": "https://honkai-star-rail.fandom.com/wiki/Amphoreus",
+        "link_text": "This is a story about 'love.' and a story about how to answer it.",
+    },
+    "penacony": {
+        "title": "Why does life slumber?",
+        "target_name": "Penacony",
+        "url": "https://honkai-star-rail.fandom.com/wiki/Penacony",
+        "link_text": "You see, everything is possible in this land of the dreams. We each came here with our own goals, and realized them in unimaginable ways.",
+    },
+    "land of the dreams, penacony": {
+        "title": "Why does life slumber?",
+        "target_name": "Penacony",
+        "url": "https://honkai-star-rail.fandom.com/wiki/Penacony",
+        "link_text": "Whether the outcome was sweet and dreamlike, or bitter and real, it is still the answer we longed for.",
+    },
+    "penacony, land of the dreams": {
+        "title": "Why does life slumber?",
+        "target_name": "Penacony",
+        "url": "https://honkai-star-rail.fandom.com/wiki/Penacony",
+        "link_text": "So, why do people choose to sleep? I think it's as you said... So when tomorrow comes, we'll wake from our dreams smiling.",
+    },
+}
+
+
+def get_easter_egg(query_text: str | None) -> dict[str, str] | None:
+    if not query_text:
+        return None
+    key = query_text.strip().casefold()
+    return EASTER_EGGS.get(key)
+
+
 async def resolve_query(query_text: str) -> ResolutionResult:
     """Resolve a catalog search through SIMBAD and the Exoplanet Archive."""
     resolve_started_at = time.perf_counter()
     normalized_query = normalize_query(query_text)
+
+    if get_easter_egg(query_text) is not None or get_easter_egg(normalized_query) is not None:
+        logger.info(
+            "Easter egg query detected for %r; returning UNRESOLVED state directly without SIMBAD/NASA lookup.",
+            query_text,
+        )
+        return ResolutionResult(query_text=normalized_query, state="UNRESOLVED")
+
     simbad_started_at = time.perf_counter()
     try:
         simbad_result = await resolve_identity(normalized_query)

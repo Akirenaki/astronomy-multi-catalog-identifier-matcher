@@ -82,6 +82,21 @@
         {% call state_banner('UNRESOLVED', 'No match found') %}
           <p>SIMBAD was reached successfully but has no record for &#8220;{{ object.query_text }}&#8221;. Check the spelling or try a catalog identifier (e.g. HD, HIP, GJ, TYC) instead of an informal name.</p>
         {% endcall %}
+        {% if object.easter_egg %}
+          <div class="card easter-egg-card" style="border-left: 4px solid #8b5cf6; background: rgba(139, 92, 246, 0.08); margin-top: 1rem; padding: 1.25rem; border-radius: 8px;">
+            <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;">
+              <span style="font-size: 1.25rem;">✦</span>
+              <h3 style="margin: 0; font-size: 1.1rem; color: #a78bfa;">{{ object.easter_egg.title }}</h3>
+            </div>
+            <p style="margin-bottom: 0.75rem; color: var(--text-secondary, #94a3b8); font-size: 0.95rem;">
+              The boundary between what is real and what is not is often unclear. <strong>{{ object.easter_egg.target_name }}</strong> is a world from <em>Honkai: Star Rail</em>.
+            </p>
+            <a href="{{ object.easter_egg.url }}" target="_blank" rel="noopener noreferrer" class="btn btn--primary" style="display: inline-flex; align-items: center; gap: 0.5rem; text-decoration: none;">
+              <span>{{ object.easter_egg.link_text }}</span>
+              <span>&rarr;</span>
+            </a>
+          </div>
+        {% endif %}
       {% endif %}
 
       <div class="card">

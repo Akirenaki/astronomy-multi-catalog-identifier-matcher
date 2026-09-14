@@ -1,6 +1,6 @@
-![Taraka Sutra](branding/taraka-sutra-banner.png)
-
 # **Taraka Sutra: astronomy-multi-catalog-identifier-matcher**
+
+![Taraka Sutra](branding/taraka-sutra-banner.png)
 
 ## **Table of Contents**
 

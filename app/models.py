@@ -65,6 +65,11 @@ class ObjectRecord(Base):
         except (TypeError, ValueError):
             return []
 
+    @property
+    def easter_egg(self) -> dict[str, str] | None:
+        from app.resolver import get_easter_egg
+        return get_easter_egg(self.query_text)
+
     def to_dict(self) -> dict:
         """Create a JSON-friendly dictionary."""
         return {
@@ -83,6 +88,7 @@ class ObjectRecord(Base):
             ),
             "candidates": self.candidates,
             "resolved_via": self.resolved_via,
+            "easter_egg": self.easter_egg,
             "resolved_at": self.resolved_at.isoformat() if self.resolved_at else None,
             "expires_at": self.expires_at.isoformat() if self.expires_at else None,
             "identifiers": [identifier.to_dict() for identifier in self.identifiers],
