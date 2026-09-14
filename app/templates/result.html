@@ -547,7 +547,6 @@
 
         if (pendingCollapse) {
           closeVizPanel();
-          applyPanelWidth(DEFAULT_PANEL_W);
         } else {
           var finalWidth = clampPanelWidth(window.innerWidth - e.clientX);
           applyPanelWidth(finalWidth);
@@ -571,6 +570,14 @@
         document.body.classList.remove('viz-open');
         vizToggle.setAttribute('aria-expanded', 'false');
         vizPanel.setAttribute('aria-hidden', 'true');
+        // Drop the inline override so --viz-panel-w falls back to the
+        // :root default of 0px. Without this, the width last applied by
+        // applyPanelWidth() (via drag or on open) stays set on body's
+        // inline style, which beats the CSS cascade even after .viz-open
+        // is gone -- .page/.site-footer stay squeezed by that stale width
+        // forever (this is what made the workspace "not return to
+        // normal" after opening/resizing the panel once).
+        document.body.style.removeProperty('--viz-panel-w');
       }
 
       function loadVizScript() {
